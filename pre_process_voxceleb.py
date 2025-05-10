@@ -12,12 +12,13 @@ import pandas as pd
 import pickle
 from multiprocessing import Pool
 import librosa
-import silence_detector
 import constants as c
 from constants import SAMPLE_RATE
 from time import time
 import sys
 import soundfile as sf
+from utils import find_files, vad  # 引入公共模块中的函数
+
 np.set_printoptions(threshold=1000)
 #pd.set_option('display.height', 1000)
 pd.set_option('display.max_rows', 500)
@@ -26,32 +27,12 @@ pd.set_option('display.width', 1000)
 pd.set_option('max_colwidth', 100)
 
 
-def find_files(directory, pattern='**/*.wav'):
-    """Recursively finds all files matching the pattern."""
-    files = librosa.util.find_files(directory, ext='wav')
-    
-    assert len(files) > 0
-    return files
-    #return glob(os.path.join(directory, pattern), recursive=True)
-
-def VAD(audio):
-    chunk_size = int(SAMPLE_RATE*0.05) # 50ms
-    index = 0
-    sil_detector = silence_detector.SilenceDetector(15)
-    nonsil_audio=[]
-    while index + chunk_size < len(audio):
-        if not sil_detector.is_silence(audio[index: index+chunk_size]):
-            nonsil_audio.extend(audio[index: index + chunk_size])
-        index += chunk_size
-
-    return np.array(nonsil_audio)
-
 def read_audio(filename, sample_rate=SAMPLE_RATE):
     #audio, sr = librosa.load(os.path.normpath(filename), sr=sample_rate, mono=True)
     
     audio, sr = sf.read(filename)
     #print(audio)
-    audio = VAD(audio.flatten())
+    audio = vad(audio.flatten())
     start_sec, end_sec = c.TRUNCATE_SOUND_SECONDS
     start_frame = int(start_sec * SAMPLE_RATE)
     end_frame = int(end_sec * SAMPLE_RATE)

@@ -4,8 +4,24 @@ import re
 from glob import glob
 import matplotlib.pyplot as plt
 import constants as c
+import numpy as np
+import silence_detector
 
+def find_files(directory, pattern='**/*.wav'):
+    """Recursively finds all files matching the pattern."""
+    return glob(os.path.join(directory, pattern), recursive=True)
 
+def VAD(audio):
+    chunk_size = int(SAMPLE_RATE*0.05) # 50ms
+    index = 0
+    sil_detector = silence_detector.SilenceDetector(20)
+    nonsil_audio=[]
+    while index + chunk_size < len(audio):
+        if not sil_detector.is_silence(audio[index: index+chunk_size]):
+            nonsil_audio.extend(audio[index: index + chunk_size])
+        index += chunk_size
+
+    return np.array(nonsil_audio)
 
 def natural_sort(l):
     convert = lambda text: int(text) if text.isdigit() else text.lower()

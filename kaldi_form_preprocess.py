@@ -7,11 +7,10 @@ import os
 from glob import glob
 from python_speech_features import fbank, delta
 import librosa
-import numpy as np
+
 import pandas as pd
 from multiprocessing import Pool
 
-import silence_detector
 import constants as c
 from constants import SAMPLE_RATE
 from time import time
@@ -22,23 +21,6 @@ pd.set_option('display.max_rows', 500)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 pd.set_option('max_colwidth', 100)
-
-
-def find_files(directory, pattern='**/*.wav'):
-    """Recursively finds all files matching the pattern."""
-    return glob(os.path.join(directory, pattern), recursive=True)
-
-def VAD(audio):
-    chunk_size = int(SAMPLE_RATE*0.05) # 50ms
-    index = 0
-    sil_detector = silence_detector.SilenceDetector(20)
-    nonsil_audio=[]
-    while index + chunk_size < len(audio):
-        if not sil_detector.is_silence(audio[index: index+chunk_size]):
-            nonsil_audio.extend(audio[index: index + chunk_size])
-        index += chunk_size
-
-    return np.array(nonsil_audio)
 
 def read_audio(filename, sample_rate=SAMPLE_RATE):
     audio, sr = librosa.load(filename, sr=sample_rate, mono=True)
