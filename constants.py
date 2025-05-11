@@ -1,16 +1,20 @@
 #coding:utf-8
 #==============================================================
 #使用LibriSpeech数据集
-DATASET_DIR = 'E:/mingde-AI/Deep_Speaker_exp3/Deep_Speaker_exp/audio/LibriSpeechSamples/train-clean-100-npy/'
-TEST_DIR = 'E:/mingde-AI/Deep_Speaker_exp3//Deep_Speaker_exp/audio/LibriSpeechTest/test-clean-npy/'
-WAV_DIR = 'E:/mingde-AI/Deep_Speaker_exp3//Deep_Speaker_exp/audio/LibriSpeechSamples/train-clean-100/'
+DATASET_DIR = '/content/melspec_small/train-clean-100/'
+TEST_DIR = '/content/melspec_small/test-clean/'
+WAV_DIR = '/content/data/LibriSpeech/train-clean-100/'
 
 #使用voxceleb数据集
 # DATASET_DIR = '/Deep_Speaker_exp/audio/voxceleb/vox_train_npy/'
 # TEST_DIR = '/Deep_Speaker_exp/audio/voxceleb/vox_test_npy/'
 # WAV_DIR = '/Deep_Speaker_exp/audio/voxceleb/vox_test/'
 #==============================================================
-BATCH_SIZE = 32        #must be even
+# 原本可能只有 NUM_FRAMES，这里我们拆分成两个
+NUM_MELS   = 64      # Mel 频带数
+NUM_FRAMES = None    # 时间帧数：None 表示可变长度；也可改成整数，表示固定帧长
+CHANNELS   = 1       # 单通道
+BATCH_SIZE = 32      # 例子值，保持你原来的设置
 TRIPLET_PER_BATCH = 3
 
 SAVE_PER_EPOCHS = 200
@@ -19,7 +23,6 @@ CANDIDATES_PER_BATCH = 640       # 18s per batch
 TEST_NEGATIVE_No = 99
 
 
-NUM_FRAMES = 160   # 299 - 16*2
 SAMPLE_RATE = 16000
 TRUNCATE_SOUND_SECONDS = (0.2, 1.81)  # (start_sec, end_sec)
 ALPHA = 0.2

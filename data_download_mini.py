@@ -1,3 +1,4 @@
+# data_download_mini.py
 #!/usr/bin/env python3
 import os
 import random
@@ -7,56 +8,49 @@ import torchaudio
 import librosa
 from tqdm import tqdm
 
-def download_test_clean(root_dir):
-    print("Downloading test-clean subset...")
-    torchaudio.datasets.LIBRISPEECH(root=root_dir, url="test-clean", download=True)
-    print("Download complete.\n")
+from utils import download_librispeech_subset, build_mini_metadata, extract_melspec_from_file
+# 配置：每个子集最多取 3 个说话人，每人 2 条
+MAX_SPEAKERS = 3
+MAX_PER_SPK = 2
 
-def build_mini_metadata(root_dir, out_csv, max_per_speaker=5):
-    """
-    构建小规模元数据，每个 speaker 取最多 N 条音频
-    """
-    subset_dir = os.path.join(root_dir, "LibriSpeech", "test-clean")
-    records = []
-
-    for speaker in os.listdir(subset_dir):
-        spk_dir = os.path.join(subset_dir, speaker)
-        for chapter in os.listdir(spk_dir):
-            ch_dir = os.path.join(spk_dir, chapter)
-            for fname in os.listdir(ch_dir):
-                if fname.endswith(".flac"):
-                    records.append({
-                        "speaker_id": int(speaker),
-                        "file_path": os.path.join(ch_dir, fname)
-                    })
-
-    df = pd.DataFrame(records)
-    # 只保留每个 speaker 最多 N 条
-    df = df.groupby("speaker_id").apply(lambda x: x.sample(min(max_per_speaker, len(x)))).reset_index(drop=True)
-    df.to_csv(out_csv, index=False)
-    print(f"Mini metadata saved to {out_csv}, 共 {len(df)} 条音频。\n")
+def download_and_build(root_dir, subset, meta_csv):
+    """使用 until.py 下载并构建小规模 metadata"""
+    print(f"Downloading {subset}...")
+    download_librispeech_subset(root_dir, subset)
+    print(f"Building mini metadata for {subset}...")
+    df = build_mini_metadata(root_dir, subset,
+                              max_speakers=MAX_SPEAKERS,
+                              max_per_spk=MAX_PER_SPK)
+    df.to_csv(meta_csv, index=False)
+    print(f"{subset} metadata saved to {meta_csv} ({len(df)} 条)\n")
     return df
 
 def extract_melspec(df, out_dir, sr=16000, n_mels=64):
-    os.makedirs(out_dir, exist_ok=True)
+    """对 metadata 中的所有文件提取梅尔谱，按 subset 子目录存放"""
+    for subset in df['subset'].unique():
+        os.makedirs(os.path.join(out_dir, subset), exist_ok=True)
+
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Extracting melspec"):
-        y, _ = librosa.load(row.file_path, sr=sr)
-        mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
-        log_mel = librosa.power_to_db(mel, ref=np.max)
-        
+        log_mel = extract_melspec_from_file(row.file_path, sr=sr, n_mels=n_mels)
         base = os.path.basename(row.file_path).replace(".flac", "")
-        np.save(os.path.join(out_dir, f"{row.speaker_id}_{base}.npy"), log_mel)
-    print(f"Features saved to {out_dir}\n")
+        out_path = os.path.join(out_dir, row.subset, f"{row.speaker_id}_{base}.npy")
+        np.save(out_path, log_mel)
+    print(f"All features saved to {out_dir}\n")
+
 
 def main():
-    root_dir = "./data"
-    meta_csv = "metadata_mini.csv"
-    feat_dir = "melspec_mini"
-
+    root_dir = "./audio"
     os.makedirs(root_dir, exist_ok=True)
-    download_test_clean(root_dir)
-    df = build_mini_metadata(root_dir, meta_csv)
-    extract_melspec(df, feat_dir)
+
+    # 1. 下载并构建元数据
+    df_train = download_and_build(root_dir, "train-clean-100", "meta_train_small.csv")
+    df_test  = download_and_build(root_dir, "test-clean",        "meta_test_small.csv")
+    df_all   = pd.concat([df_train, df_test], ignore_index=True)
+    df_all.to_csv("metadata_small.csv", index=False)
+    print(f"Combined metadata saved to metadata_small.csv ({len(df_all)} files)\n")
+
+    # 3. 提取梅尔谱特征
+    extract_melspec(df_all, "melspec_small")
 
 if __name__ == "__main__":
     main()

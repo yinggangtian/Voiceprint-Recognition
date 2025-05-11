@@ -1,0 +1,7 @@
+speaker_id,file_path,subset
+5561,./audio/LibriSpeech/train-clean-100/5561/39621/5561-39621-0014.flac,train-clean-100
+5561,./audio/LibriSpeech/train-clean-100/5561/41616/5561-41616-0027.flac,train-clean-100
+1183,./audio/LibriSpeech/train-clean-100/1183/133255/1183-133255-0003.flac,train-clean-100
+1183,./audio/LibriSpeech/train-clean-100/1183/133256/1183-133256-0011.flac,train-clean-100
+4830,./audio/LibriSpeech/train-clean-100/4830/25898/4830-25898-0019.flac,train-clean-100
+4830,./audio/LibriSpeech/train-clean-100/4830/25898/4830-25898-0005.flac,train-clean-100

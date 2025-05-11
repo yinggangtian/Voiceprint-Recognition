@@ -1,13 +1,7 @@
-from keras.engine import Layer, InputSpec
-from keras import initializers
-from keras import regularizers
-from keras import constraints
-from keras import backend as K
-
-from keras.utils.generic_utils import get_custom_objects
-
-from keras.layers import BatchNormalization
-
+from tensorflow.keras.layers import Layer, InputSpec, BatchNormalization
+from tensorflow.keras import initializers, regularizers, constraints, backend as K
+from tensorflow.keras.utils import get_custom_objects
+import tensorflow as tf
 
 class SwitchNormalization(Layer):
     """Switchable Normalization layer
@@ -192,9 +186,11 @@ class SwitchNormalization(Layer):
         temp = variance_instance + K.square(mean_instance)
         variance_layer = K.mean(temp, self.axis, keepdims=True) - K.square(mean_layer)
 
+
+
         def training_phase():
-            mean_batch = K.mean(mean_instance, axis=0, keepdims=True)
-            variance_batch = K.mean(temp, axis=0, keepdims=True) - K.square(mean_batch)
+            mean_batch = K.mean(inputs, reduction_axes, keepdims=True)
+            variance_batch = K.var(inputs, reduction_axes, keepdims=True)
 
             mean_batch_reshaped = K.flatten(mean_batch)
             variance_batch_reshaped = K.flatten(variance_batch)
@@ -220,7 +216,6 @@ class SwitchNormalization(Layer):
         def inference_phase():
             mean_batch = self.moving_mean
             variance_batch = self.moving_variance
-
             return normalize_func(mean_batch, variance_batch)
 
         def normalize_func(mean_batch, variance_batch):
@@ -250,12 +245,15 @@ class SwitchNormalization(Layer):
 
             return outputs
 
-        if training in {0, False}:
-            return inference_phase()
+        if training is None:
+            training = K.learning_phase()
 
-        return K.in_train_phase(training_phase,
-                                inference_phase,
-                                training=training)
+        return tf.cond(
+            tf.cast(training, tf.bool),
+            training_phase,
+            inference_phase
+        )
+
 
     def get_config(self):
         config = {
@@ -285,13 +283,11 @@ class SwitchNormalization(Layer):
     def compute_output_shape(self, input_shape):
         return input_shape
 
-
 get_custom_objects().update({'SwitchNormalization': SwitchNormalization})
 
-
 if __name__ == '__main__':
-    from keras.layers import Input
-    from keras.models import Model
+    from tensorflow.keras.layers import Input
+    from tensorflow.keras.models import Model
     ip = Input(shape=(None, None, 4))
     #ip = Input(batch_shape=(100, None, None, 2))
     x = SwitchNormalization(axis=-1)(ip)

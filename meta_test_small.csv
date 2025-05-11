@@ -1,0 +1,7 @@
+speaker_id,file_path,subset
+8224,./audio/LibriSpeech/test-clean/8224/274384/8224-274384-0011.flac,test-clean
+8224,./audio/LibriSpeech/test-clean/8224/274381/8224-274381-0000.flac,test-clean
+1580,./audio/LibriSpeech/test-clean/1580/141083/1580-141083-0049.flac,test-clean
+1580,./audio/LibriSpeech/test-clean/1580/141084/1580-141084-0042.flac,test-clean
+3575,./audio/LibriSpeech/test-clean/3575/170457/3575-170457-0037.flac,test-clean
+3575,./audio/LibriSpeech/test-clean/3575/170457/3575-170457-0043.flac,test-clean

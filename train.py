@@ -10,10 +10,10 @@ import numpy as np
 import sys
 import os
 import random
-from keras.optimizers import Adam
-from keras.layers.core import Dense
-from keras.models import Model
-import keras
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.models import Model
+import tensorflow.keras as keras
 import constants as c
 from constants import *
 import select_batch
@@ -43,9 +43,7 @@ spk_index = None
 #------------------------------------------------------------------------------------------
 
 def main(libri_dir=c.DATASET_DIR):
-
     PRE_TRAIN = c.PRE_TRAIN
-
     libri_dir=c.WAV_DIR
     logging.info('Looking for fbank features [.npy] files in {}.'.format(libri_dir))
     libri = data_catalog(libri_dir)

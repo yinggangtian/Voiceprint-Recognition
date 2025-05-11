@@ -1,162 +1,168 @@
-
-# train-clean-100: 251 speaker, 28539 utterance
-# train-clean-360: 921 speaker, 104104 utterance. Extract audio features and save it as npy file, cost 8443.623185157776 seconds
-# test-clean: 40 speaker, 2620 utterance
-# batchisize 32*3 : train on triplet: 3.3s/steps , softmax pre train: 3.1 s/steps
-
-from models import convolutional_model, convolutional_model_simple
-from glob import glob
-import logging
+#!/usr/bin/env python3
 import os
-from keras.models import Model
-from keras.layers.core import Dense
-from keras.optimizers import Adam
-import numpy as np
-import random
-import constants as c
-import utils
-from pre_process import data_catalog, preprocess_and_save
-from select_batch import clipped_audio
-from time import time
 import sys
-from sklearn.model_selection import train_test_split
+import logging
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
 
-def loadFromList(x_paths, batch_start, limit, labels_to_id, no_of_speakers, ):
-    x = []
-    y_ = []
-    for i in range(batch_start, limit):
-        x_ = np.load(x_paths[i])
-        x.append(clipped_audio(x_))
+import constants as c
+from utils import load_metadata, build_label_map, split_metadata, get_last_checkpoint, clean_old_checkpoints
+from models import convolutional_model
 
-        last = x_paths[i].split("/")[-1]
-        y_.append(labels_to_id[last.split("-")[0]])
+# ─── 在任何 TensorFlow/Keras 导入之前，先屏蔽大部分日志 ───
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-    x = np.asarray(x)
+# ─── 初始化模型函数 ───────────────────────────────────────────
+def initialize_model(input_shape, no_of_speakers):
+    """
+    初始化模型。
 
-    y = np.eye(no_of_speakers)[y_]    #one-hot
-    y = np.asarray(y)
-    return x, y
+    Args:
+        input_shape: 输入数据的形状，例如 (c.NUM_MELS, None, c.CHANNELS)。
+        no_of_speakers: 说话人数量，即分类数量。
 
-def batchTrainingImageLoader(train_data, labels_to_id, no_of_speakers, batch_size=c.BATCH_SIZE * c.TRIPLET_PER_BATCH):
-    paths = train_data
-    L = len(paths)
-    while True:
-        np.random.shuffle(paths)
-        batch_start = 0
-        batch_end = batch_size
+    Returns:
+        编译后的 Keras 模型。
+    """
+    base = convolutional_model(input_shape=input_shape) # 使用卷积模型作为基础
+    x = Dense(no_of_speakers, activation='softmax', name='softmax_layer')(base.output) # 添加全连接层和 softmax 激活
+    model = Model(inputs=base.input, outputs=x) # 定义模型输入输出
+    model.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy']) # 使用 Adam 优化器和交叉熵损失
+    logging.info(model.summary()) # 打印模型结构
+    return model
 
-        while batch_end < L:
-            x_train_t, y_train_t = loadFromList(paths, batch_start, batch_end, labels_to_id, no_of_speakers)
-            randnum = random.randint(0, 100)
-            random.seed(randnum)
-            random.shuffle(x_train_t)
-            random.seed(randnum)
-            random.shuffle(y_train_t)
-            yield (x_train_t, y_train_t)
-            batch_start += batch_size
-            batch_end += batch_size
+# ─── 动态填充函数 ───────────────────────────────────────────
+def pad_and_stack(batch_data):
+    """
+    将一个批次内的 Mel 频谱图填充到相同的最大长度，并将它们堆叠起来。
 
-def batchTestImageLoader(test_data, labels_to_id, no_of_speakers, batch_size=c.BATCH_SIZE * c.TRIPLET_PER_BATCH):
-    paths = test_data
-    L = len(paths)
-    while True:
-        np.random.shuffle(paths)
-        batch_start = 0
-        batch_end = batch_size
+    Args:
+        batch_data: 一个批次的数据，它是一个元组列表，其中每个元组是 (melspec, label)。
+                    melspec 的形状为 (c.NUM_MELS, time_frames)。
 
-        while batch_end < L:
-            x_test_t, y_test_t = loadFromList(paths, batch_start, batch_end, labels_to_id, no_of_speakers)
-            yield (x_test_t, y_test_t)
-            batch_start += batch_size
-            batch_end += batch_size
+    Returns:
+        一个元组 (padded_melspecs, labels)，其中：
+            - padded_melspecs 的形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)。
+            - labels 的形状为 (batch_size, num_speakers)。
+    """
+    melspecs, labels = batch_data # 从批次数据中解压出 Mel 频谱图和标签
+    # Find the maximum time_frames in the batch
+    max_time_frames = max(spec.shape[1] for spec in melspecs) # 找到该批次中最长的时序长度
 
-def split_data(files, labels, batch_size):
-    test_size = max(batch_size/len(labels),0.05)
-    train_paths, test_paths, y_train, y_test = train_test_split(files, labels, test_size=test_size, random_state=42)
-    return train_paths, test_paths
+    # Pad each melspec to max_time_frames
+    padded_melspecs = []
+    for spec in melspecs:
+        pad_width = max_time_frames - spec.shape[1] # 计算需要填充的宽度
+        # Pad only the time dimension (axis 1)
+        padded_spec = tf.pad(spec, [[0, 0], [0, pad_width]], mode='CONSTANT') # 仅在时间维度上填充
+        padded_melspecs.append(padded_spec)
 
+    # Stack the padded melspecs into a single tensor
+    padded_melspecs = tf.stack(padded_melspecs, axis=0)  # Shape: (batch_size, c.NUM_MELS, max_time_frames)
+    padded_melspecs = tf.expand_dims(padded_melspecs, axis=-1) # Add channel dimension # 添加通道维度，使其形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)
 
+    # Convert labels to a TensorFlow tensor
+    labels = tf.stack(labels, axis=0) # 将标签堆叠成一个张量
+
+    return padded_melspecs, labels # 返回填充后的 Mel 频谱图和标签
+
+# ─── 路径到加载器的修改版本 ───────────────────────────────────────────
+def paths_to_loaders(metadata, melspec_dir, label_map, batch_size):
+    """
+    从元数据创建 TensorFlow Dataset。
+
+    Args:
+        metadata: 包含文件路径和说话人 ID 的 pandas DataFrame。
+        melspec_dir: Mel 频谱图文件存储的目录。
+        label_map: 将说话人 ID 映射到数字标签的字典。
+        batch_size: 所需的批次大小。
+
+    Returns:
+        一个 TensorFlow Dataset，它产生 (padded_melspecs, labels) 批次。
+    """
+    def generator():
+        """
+        生成器函数，用于按需加载 Mel 频谱图和标签。
+        """
+        for index, row in metadata.iterrows(): # 遍历元数据中的每一行
+            melspec_path = os.path.join(melspec_dir, row['filename'] + '.npy') # 构建 Mel 频谱图的完整路径
+            melspec = np.load(melspec_path) # 加载 Mel 频谱图
+            label = label_map[row['speaker_id']] # 获取说话人对应的数字标签
+            # Convert label to one-hot encoding *inside* the generator
+            one_hot_label = tf.one_hot(label, depth=len(label_map)) # 将数字标签转换为 one-hot 编码
+            yield melspec, one_hot_label # 产生 Mel 频谱图和 one-hot 编码的标签
+
+    # Use tf.data.Dataset.from_generator
+    dataset = tf.data.Dataset.from_generator(
+        generator,
+        output_signature=(
+            tf.TensorSpec(shape=(c.NUM_MELS, None), dtype=tf.float32),  # Dynamic time dimension # 指定 Mel 频谱图的形状，时间维度为 None，表示动态长度
+            tf.TensorSpec(shape=(len(label_map),), dtype=tf.float32), #one hot # 指定标签的形状
+        )
+    )
+    # Use padded_batch and set padding shape
+    dataset = dataset.batch(batch_size).map(pad_and_stack) # Use the new pad_and_stack function # 使用 padded_batch 进行批处理和动态填充
+
+    return dataset # 返回构建好的 TensorFlow Dataset
+
+# ─── 训练模型函数 ───────────────────────────────────────────
+def train_model(model, train_loader, test_loader):
+    """
+    训练模型。
+
+    Args:
+        model: 要训练的 Keras 模型。
+        train_loader: 训练数据加载器（TensorFlow Dataset）。
+        test_loader: 测试数据加载器（TensorFlow Dataset）。
+    """
+    steps = 0 # 初始化训练步数
+    last_ckpt = get_last_checkpoint(c.PRE_CHECKPOINT_FOLDER) # 获取最后一个检查点
+    if last_ckpt:
+        model.load_weights(last_ckpt) # 如果存在检查点，则加载权重
+        steps = int(last_ckpt.split('_')[-2]) # 从检查点文件名中提取步数
+
+    while True: # 无限循环，直到达到所需的训练轮数或满足其他停止条件
+        for x, y in train_loader: # Iterate through the tf.data.Dataset # 从训练数据加载器中获取一个批次的训练数据
+            loss, acc = model.train_on_batch(x, y) # 在该批次上进行训练，并获取损失和准确率
+            logging.info(f"Step {steps} — train loss={loss:.4f}, acc={acc:.4f}") # 打印训练信息
+
+            if steps % c.TEST_PER_EPOCHS == 0: # 每 c.TEST_PER_EPOCHS 步进行一次测试
+                for xt, yt in test_loader:
+                    tl, ta = model.test_on_batch(xt, yt) # 在测试集上评估模型
+                    logging.info(f"Step {steps} — test loss={tl:.4f}, acc={ta:.4f}") # 打印测试信息
+                    break # Only test on the first batch for efficiency # 为了效率，仅在第一个测试批次上进行测试
+
+            if steps % c.SAVE_PER_EPOCHS == 0: # 每 c.SAVE_PER_EPOCHS 步保存一次模型
+                clean_old_checkpoints(c.PRE_CHECKPOINT_FOLDER, keep_latest=3) # 清理旧的检查点，仅保留最新的 3 个
+                model.save_weights(
+                    os.path.join(c.PRE_CHECKPOINT_FOLDER, f"model_{steps}_{loss:.4f}.h5") # 保存模型权重
+                )
+            steps += 1 # 增加训练步数
+
+# ─── 主入口 ───────────────────────────────────────────
 def main():
-    batch_size = c.BATCH_SIZE * c.TRIPLET_PER_BATCH
-    # train_path = "/Users/walle/PycharmProjects/Speech/coding/deep-speaker-master/audio/LibriSpeechSamples/train-clean-100"
-    train_path = c.DATASET_DIR
+    """
+    主函数，用于执行整个训练流程。
+    """
+    logging.basicConfig(
+        handlers=[logging.StreamHandler(sys.stdout)], # 将日志输出到标准输出
+        level=logging.INFO, # 设置日志级别为 INFO
+        format="%(asctime)s [%(levelname)s] %(message)s" # 设置日志格式
+    )
 
-    libri = data_catalog(train_path)
-    files = list(libri['filename'])
-    labels1 = list(libri['speaker_id'])
+    meta = load_metadata("metadata_small.csv") # 加载元数据
+    train_meta, test_meta = split_metadata(meta, train_frac=0.8) # 将元数据分割为训练集和测试集
 
-    labels_to_id = {}
-    id_to_labels = {}
-    i = 0
+    label_map = build_label_map(meta) # 构建标签映射，将说话人 ID 映射到数字标签
+    train_loader = paths_to_loaders(train_meta, "melspec_small", label_map, c.BATCH_SIZE) # 创建训练数据加载器
+    test_loader  = paths_to_loaders(test_meta,  "melspec_small", label_map, c.BATCH_SIZE) # 创建测试数据加载器
 
-    for label in np.unique(labels1):
-        labels_to_id[label] = i
-        id_to_labels[i] = label
-        i += 1
+    # 新的输入形状
+    input_shape = (c.NUM_MELS, None, c.CHANNELS)  # e.g. (64, None, 1) # 定义模型的输入形状，时间维度为 None，表示动态长度
+    model = initialize_model(input_shape, no_of_speakers=len(label_map)) # 初始化模型
+    train_model(model, train_loader, test_loader) # 训练模型
 
-    no_of_speakers = len(np.unique(labels1))
-
-    train_data, test_data = split_data(files, labels1, batch_size)
-    batchloader = batchTrainingImageLoader(train_data,labels_to_id,no_of_speakers, batch_size=batch_size)
-    testloader = batchTestImageLoader(test_data, labels_to_id, no_of_speakers, batch_size=batch_size)
-    test_steps = int(len(test_data)/batch_size)
-    x_test, y_test = testloader.__next__()
-    b = x_test[0]
-    num_frames = b.shape[0]
-    logging.info('num_frames = {}'.format(num_frames))
-    logging.info('batch size: {}'.format(batch_size))
-    logging.info("x_shape:{0}, y_shape:{1}".format(x_test.shape, y_test.shape))
-
-    base_model = convolutional_model(input_shape=x_test.shape[1:], batch_size=batch_size, num_frames=num_frames)
-    x = base_model.output
-    x = Dense(no_of_speakers, activation='softmax',name='softmax_layer')(x)
-
-    model = Model(base_model.input, x)
-    logging.info(model.summary())
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    print("printing format per batch:", model.metrics_names)
-    # y_ = np.argmax(y_train, axis=0)
-    # class_weights = sklearn.utils.class_weight.compute_class_weight('balanced', np.unique(y_), y_)
-
-    grad_steps = 0
-    last_checkpoint = utils.get_last_checkpoint_if_any(c.PRE_CHECKPOINT_FOLDER)
-    last_checkpoint = None
-    if last_checkpoint is not None:
-        logging.info('Found checkpoint [{}]. Resume from here...'.format(last_checkpoint))
-        model.load_weights(last_checkpoint)
-        grad_steps = int(last_checkpoint.split('_')[-2])
-        logging.info('[DONE]')
-
-    orig_time = time()
-
-    while True:
-        orig_time = time()
-        x_train, y_train = batchloader.__next__()
-        [loss, acc] = model.train_on_batch(x_train, y_train)  # return [loss, acc]
-        logging.info('Train Steps:{0}, Time:{1:.2f}s, Loss={2}, Accuracy={3}'.format(grad_steps,time() - orig_time, loss,acc))
-
-        with open(c.PRE_CHECKPOINT_FOLDER + "/train_loss_acc.txt", "a") as f:
-            f.write("{0},{1},{2}\n".format(grad_steps, loss, acc))
-
-        if grad_steps % c.TEST_PER_EPOCHS == 0:
-            losses = []; accs = []
-            for ss in range(test_steps):
-                [loss, acc] = model.test_on_batch(x_test, y_test)
-                x_test, y_test = testloader.__next__()
-                losses.append(loss); accs.append(acc)
-            loss = np.mean(np.array(losses)); acc = np.mean(np.array(accs))
-            print("loss", loss, "acc", acc)
-            logging.info('Test the Data ---------- Steps:{0}, Loss={1}, Accuracy={2}, '.format(grad_steps,loss,acc))
-            with open(c.PRE_CHECKPOINT_FOLDER + "/test_loss_acc.txt", "a") as f:
-                f.write("{0},{1},{2}\n".format(grad_steps, loss, acc))
-
-        if grad_steps  % c.SAVE_PER_EPOCHS == 0:
-            utils.create_dir_and_delete_content(c.PRE_CHECKPOINT_FOLDER)
-            model.save_weights('{0}/model_{1}_{2:.5f}.h5'.format(c.PRE_CHECKPOINT_FOLDER, grad_steps, loss))
-
-        grad_steps += 1
-
-if __name__ == '__main__':
-    logging.basicConfig(handlers=[logging.StreamHandler(stream=sys.stdout)], level=logging.INFO,
-                        format='%(asctime)-15s [%(levelname)s] %(filename)s/%(funcName)s | %(message)s')
-    main()
+if __name__ == "__main__":
+    main() # 执行主函数
