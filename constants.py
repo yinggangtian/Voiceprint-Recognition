@@ -1,9 +1,9 @@
 #coding:utf-8
 #==============================================================
 #使用LibriSpeech数据集
-DATASET_DIR = '/content/melspec_small/train-clean-100/'
-TEST_DIR = '/content/melspec_small/test-clean/'
-WAV_DIR = '/content/data/LibriSpeech/train-clean-100/'
+DATASET_DIR = './melspec_small/'
+TEST_DIR = './melspec_small/'
+WAV_DIR = './audio/LibriSpeech/'
 
 #使用voxceleb数据集
 # DATASET_DIR = '/Deep_Speaker_exp/audio/voxceleb/vox_train_npy/'
@@ -42,7 +42,7 @@ GRU_CHECKPOINT_FOLDER = 'gru_checkpoints'
 LOSS_LOG= CHECKPOINT_FOLDER + '/losses.txt'
 TEST_LOG= CHECKPOINT_FOLDER + '/acc_eer.txt'
 
-PRE_TRAIN = False
+PRE_TRAIN = True
 
 COMBINE_MODEL = True
 

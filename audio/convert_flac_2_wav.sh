@@ -11,7 +11,7 @@ apt-get install -y -qq parallel sox libsox-fmt-all python3-pip &>/dev/null || tr
 pip install -q tqdm psutil &>/dev/null || true
 
 # ======== 配置参数 ========
-SRC_DIR="/content/drive/MyDrive/Voiceprint-Recognition/audio/LibriSpeech"
+SRC_DIR="./audio/LibriSpeech"
 TEMP_DIR="/content/temp_conversion"
 FLAC_LIST="$TEMP_DIR/all_flacs.txt"
 CONVERT_LOG="$TEMP_DIR/converted.log"
@@ -123,8 +123,8 @@ echo "🔍 搜索FLAC文件..."
 if [ -f "$FLAC_LIST" ]; then
     echo "📄 使用现有文件列表"
 else
-    # 加速搜索
-    find "$SRC_DIR" -type f -name "*.flac" -printf "%p\n" > "$FLAC_LIST"
+    echo "📄 重新生成文件列表"
+    find "$SRC_DIR" -type f -name "*.flac" > "$FLAC_LIST"
 fi
 
 TOTAL=$(wc -l < "$FLAC_LIST")
