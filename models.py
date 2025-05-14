@@ -1,6 +1,7 @@
 import math
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# Use the unified SwitchNormalization implementation
 from switchable_norm import SwitchNormalization
 import tensorflow as tf
 from tensorflow.keras import backend as K, layers, regularizers, Model
@@ -102,7 +103,10 @@ def convolutional_model(input_shape=(c.NUM_MELS, c.NUM_FRAMES, c.CHANNELS)):
     x = Permute((2, 1, 3), name="permute_time_mel_channel")(x)
     # 2) 合并 mel_blocks × channels → 2048
     FEATURE_DIM = (c.NUM_MELS // 16) * 512  # = 4 * 512
-    x = Reshape(target_shape=(None, FEATURE_DIM), name="reshape_to_2048")(x)
+    # 使用 Lambda 层动态调整形状，更好地处理可变维度
+    x = Lambda(lambda y: tf.reshape(y, 
+                                    [tf.shape(y)[0], tf.shape(y)[1], FEATURE_DIM]), 
+               name="reshape_to_2048")(x)
     # 3) 对 time_steps 进行全局平均
     x = GlobalAveragePooling1D(name="global_avg_time")(x)
     # 4) 全连接 + L2 归一化
@@ -209,7 +213,7 @@ def recurrent_model_softmax(input_shape=(c.NUM_FRAMES, 64, 1),
                             batch_size=c.BATCH_SIZE * c.TRIPLET_PER_BATCH ,num_frames=c.NUM_FRAMES, num_spks=c.NUM_SPEAKERS):
     inputs = Input(shape=input_shape)
     #x = Permute((2,1))(inputs)
-    x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(l=0.0001))(inputs)
+    x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(0.0001))(inputs)
     # x = BatchNormalization()(x)  #shape = (BATCH_SIZE , num_frames/2, 64/2, 64)
 
     x = SwitchNormalization(axis=-1)(x)
@@ -239,7 +243,7 @@ def recurrent_model_sigmoid_cross_entropy(input_shape=(c.NUM_FRAMES, 64, 1),
     '''
     inputs = Input(shape=input_shape)
     #x = Permute((2,1))(inputs)
-    x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(l=0.0001))(inputs)
+    x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(0.0001))(inputs)
     # x = BatchNormalization()(x)  #shape = (BATCH_SIZE , num_frames/2, 64/2, 64)
 
     x = SwitchNormalization(axis=-1)(x)
@@ -268,5 +272,5 @@ def recurrent_model_cross_entropy(input_shape=(c.NUM_FRAMES, 64, 1),
     '''
     inputs = Input(shape=input_shape)
     #x = Permute((2,1))(inputs)
-    x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(l=0.0001))(inputs)
+    x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(0.0001))(inputs)
     # x = BatchNormalization()(x)  #shape = (BATCH_SIZE , num_frames/2, 64/2,

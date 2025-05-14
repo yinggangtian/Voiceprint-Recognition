@@ -1,14 +1,10 @@
 import logging
-import keras
-import keras.backend as K
 import constants as c
-import keras.layers
 import numpy as np
 import math
-from tensorflow import keras
-from tensorflow.python.keras import backend as K
 import tensorflow as tf
-import numpy as np
+from tensorflow import keras
+from tensorflow.keras import backend as K
 import random
 '''
 https://arxiv.org/pdf/1801.07698.pdf
@@ -45,8 +41,8 @@ def center_loss(num_classes:int):
         len_features = features.get_shape()[1]
         # 建立一个Variable,shape为[num_classes, len_features]，用于存储整个网络的样本中心，
         # 设置trainable=False是因为样本中心不是由梯度进行更新的
-        centers = tf.get_variable('centers', [num_classes, len_features], dtype=tf.float32,
-                                initializer=tf.constant_initializer(0), trainable=False)
+        centers = tf.compat.v1.get_variable('centers', [num_classes, len_features], dtype=tf.float32,
+                                initializer=tf.compat.v1.constant_initializer(0), trainable=False)
         # 将label展开为一维的，如果labels已经是一维的，则该动作其实无必要
         labels = tf.reshape(labels, [-1])
 
@@ -65,10 +61,10 @@ def center_loss(num_classes:int):
         diff = alpha * diff
 
         # 更新centers
-        centers_update_op = tf.scatter_sub(centers, tf.cast(labels, tf.int32), diff)
+        centers_update_op = tf.compat.v1.scatter_sub(centers, tf.cast(labels, tf.int32), diff)
 
         # 这里使用tf.control_dependencies更新centers
-        with tf.control_dependencies([centers_update_op]):
+        with tf.compat.v1.control_dependencies([centers_update_op]):
             # 计算center-loss
             c_loss = tf.nn.l2_loss(features - centers_batch)
 
@@ -78,18 +74,19 @@ def center_loss(num_classes:int):
 
 
 def coco_loss(out_num:int):
-    w_init = tf.contrib.layers.xavier_initializer(uniform=False)
+    # Using Keras GlorotUniform initializer instead of tf.contrib.layers.xavier_initializer
+    w_init = tf.keras.initializers.GlorotUniform()
     s = 30
     m = 0.4
     def cosineface_losses(y_true, y_pred):
         y_true = tf.cast(y_true, tf.int32)
-        with tf.variable_scope('coco_losss'):
-            y_pred_norm = tf.norm(y_pred, axis=1 ,keep_dims=True)
+        with tf.compat.v1.variable_scope('coco_losss'):
+            y_pred_norm = tf.norm(y_pred, axis=1, keepdims=True)
             y_pred = tf.div(y_pred, y_pred_norm, name='norm_ypred')
 
-            weights = tf.get_variable(name='embedding_weights', shape=(y_pred.shape[-1], out_num),
+            weights = tf.compat.v1.get_variable(name='embedding_weights', shape=(y_pred.shape[-1], out_num),
                                     initializer=w_init, dtype=tf.float32)
-            weights_norm = tf.norm(weights, axis=0, keep_dims=True)
+            weights_norm = tf.norm(weights, axis=0, keepdims=True)
             weights = tf.div(weights, weights_norm, name='norm_weights')
             
             # cos_theta - m
@@ -120,7 +117,7 @@ def softmax_loss(out_num:int):
 
 
 def AAM_loss(out_num: int):
-    w_init = tf.contrib.layers.xavier_initializer(uniform=False)
+    w_init = tf.keras.initializers.GlorotUniform()
     s, m = 64, 0.5
 
     def additive_angular_margin_loss(y_true, y_pred):
@@ -130,13 +127,13 @@ def AAM_loss(out_num: int):
         mm = sin_m * m  # issue 1
         threshold = math.cos(math.pi - m)
 
-        with tf.variable_scope('aam_loss'):
+        with tf.compat.v1.variable_scope('aam_loss'):
             # inputs and weights norm
-            y_pred_norm = tf.norm(y_pred, axis=1, keep_dims=True)
+            y_pred_norm = tf.norm(y_pred, axis=1, keepdims=True)
             y_pred = tf.div(y_pred, y_pred_norm, name='norm_y_pred')
-            weights = tf.get_variable(name='embedding_weights', shape=(y_pred.shape[-1], out_num),
+            weights = tf.compat.v1.get_variable(name='embedding_weights', shape=(y_pred.shape[-1], out_num),
                                     initializer=w_init, dtype=tf.float32)
-            weights_norm = tf.norm(weights, axis=0, keep_dims=True)
+            weights_norm = tf.norm(weights, axis=0, keepdims=True)
             weights = tf.div(weights, weights_norm, name='norm_weights')
             # cos(theta+m)
             cos_t = tf.matmul(y_pred, weights, name='cos_t')

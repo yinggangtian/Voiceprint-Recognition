@@ -12,7 +12,7 @@ import pandas as pd
 import random
 import numpy as np
 import constants as c
-from utils import get_last_checkpoint_if_any
+from utils import get_last_checkpoint
 from models import convolutional_model
 from triplet_loss import deep_speaker_loss
 from pre_process import data_catalog
@@ -36,8 +36,15 @@ def matrix_cosine_similarity(x1, x2):
     return mul
 
 def clipped_audio(x, num_frames=c.NUM_FRAMES):
-    if x.shape[0] > num_frames + 20:
-        bias = np.random.randint(20, x.shape[0] - num_frames)
+    # 处理 num_frames 为 None 的情况
+    if num_frames is None:
+        # 如果未指定帧数，直接返回原始数据
+        return x
+        
+    # 确保安全操作：仅在 num_frames 不为 None 时进行加法
+    margin = 20  # 边缘区域大小
+    if x.shape[0] > num_frames + margin:
+        bias = np.random.randint(margin, x.shape[0] - num_frames)
         clipped_x = x[bias: num_frames + bias]
     elif x.shape[0] > num_frames:
         bias = np.random.randint(0, x.shape[0] - num_frames)
@@ -69,17 +76,61 @@ def preprocess(unique_speakers, spk_utt_dict,candidates=c.CANDIDATES_PER_BATCH):
     '''
     x = []
     labels = []
+    
+    # 第一轮：加载所有音频并找出最大帧数、特征维度和通道数
+    loaded_audios = []
+    max_frames = 0
+    feature_dim = 64  # 标准特征维度
+    channel_dim = 1   # 标准通道数
+    
     for file in files:
         x_ = np.load(file)
         x_ = clipped_audio(x_)
-        if x_.shape != (c.NUM_FRAMES, 64, 1):
-            print("Error !!!",file['filename'].values[0])
-        x.append(x_)
-        labels.append(file.split("/")[-1].split("-")[0])
+        
+        # 确保数据有三个维度
+        if len(x_.shape) == 1:
+            # 如果只有一个维度，reshape 为 (frames, features)
+            frames = len(x_)
+            x_ = x_.reshape(frames, 1)
+            
+        if len(x_.shape) == 2:
+            # 如果只有两个维度 (frames, features)，添加通道维度
+            x_ = np.expand_dims(x_, axis=2)
+            
+        # 更新特征和通道维度 (如果需要)
+        feature_dim = max(feature_dim, x_.shape[1]) if len(x_.shape) > 1 else feature_dim
+        channel_dim = max(channel_dim, x_.shape[2]) if len(x_.shape) > 2 else channel_dim
+        
+        loaded_audios.append(x_)
+        max_frames = max(max_frames, x_.shape[0])
+        labels.append(file.split("/")[-1].split("_")[0])
+    
+    # 第二轮：应用填充（padding）使所有样本具有相同长度和形状
+    for x_ in loaded_audios:
+        # 创建填充后的数组 - 确保所有样本具有相同的形状
+        padded = np.zeros((max_frames, feature_dim, channel_dim), dtype=np.float32)
+        
+        # 复制原始数据
+        frames_to_copy = min(x_.shape[0], max_frames)
+        
+        # 根据输入数据的维度安全地处理
+        if len(x_.shape) == 3:
+            feat_to_copy = min(x_.shape[1], feature_dim)
+            chan_to_copy = min(x_.shape[2], channel_dim)
+            padded[:frames_to_copy, :feat_to_copy, :chan_to_copy] = x_[:frames_to_copy, :feat_to_copy, :chan_to_copy]
+        elif len(x_.shape) == 2:
+            feat_to_copy = min(x_.shape[1], feature_dim)
+            padded[:frames_to_copy, :feat_to_copy, 0] = x_[:frames_to_copy, :feat_to_copy]
+        else:  # 一维数组情况
+            padded[:frames_to_copy, 0, 0] = x_[:frames_to_copy]
+            
+        x.append(padded)
+        
+    # 添加调试信息，检查最终批次的形状
+    if x:
+        print(f"Batch shape after padding: {np.array(x).shape}")
 
-    #features = np.array(x)  # (batchsize, num_frames, 64, 1)
-
-    return np.array(x),np.array(labels)
+    return np.array(x), np.array(labels)
 
 stack = []
 def create_data_producer(unique_speakers, spk_utt_dict,candidates=c.CANDIDATES_PER_BATCH):
@@ -204,7 +255,7 @@ def best_batch(model, batch_size=c.BATCH_SIZE,candidates=c.CANDIDATES_PER_BATCH)
 if __name__ == '__main__':
     model = convolutional_model()
     model.compile(optimizer='adam', loss=deep_speaker_loss)
-    last_checkpoint = get_last_checkpoint_if_any(c.CHECKPOINT_FOLDER)
+    last_checkpoint = get_last_checkpoint(c.CHECKPOINT_FOLDER)
     if last_checkpoint is not None:
         print('Found checkpoint [{}]. Resume from here...'.format(last_checkpoint))
         model.load_weights(last_checkpoint)

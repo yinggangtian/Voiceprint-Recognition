@@ -5,6 +5,7 @@
 # batchisize 32*3 : train on triplet: 5s - > 3.1s/steps , softmax pre train: 3.1 s/steps
 
 import logging
+import argparse
 from time import time
 import numpy as np
 import sys
@@ -21,7 +22,7 @@ from pre_process import data_catalog, preprocess_and_save
 from models import *
 from random_batch import stochastic_mini_batch
 from triplet_loss import *
-from utils import get_last_checkpoint_if_any, create_dir_and_delete_content
+from utils import get_last_checkpoint, create_dir_and_delete_content
 from test_model import eval_model
 
 def create_dict(files,labels,spk_uniq):
@@ -42,19 +43,29 @@ unique_speakers = 0
 spk_index = None
 #------------------------------------------------------------------------------------------
 
-def main(libri_dir=c.DATASET_DIR):
+def main(libri_dir=c.DATASET_DIR, max_steps=None):
     PRE_TRAIN = c.PRE_TRAIN
-    libri_dir=c.WAV_DIR
+    # 不要覆盖libri_dir，使用传入的默认值c.DATASET_DIR
     logging.info('Looking for fbank features [.npy] files in {}.'.format(libri_dir))
-    libri = data_catalog(libri_dir)
+    libri = data_catalog(libri_dir, pattern='**/*.npy')
 
     if len(libri) == 0:
         logging.warning('Cannot find npy files, we will load audio, extract features and save it as npy file')
         logging.warning('Waiting for preprocess...')
+        logging.warning('Source directory: %s, Target directory: %s', c.WAV_DIR, c.DATASET_DIR)
+        # 确保目标目录存在
+        os.makedirs(c.DATASET_DIR, exist_ok=True)
+        os.makedirs(os.path.join(c.DATASET_DIR, 'train-clean-100'), exist_ok=True)
+        os.makedirs(os.path.join(c.DATASET_DIR, 'test-clean'), exist_ok=True)
+        
+        # 执行特征提取
         preprocess_and_save(c.WAV_DIR, c.DATASET_DIR)
-        libri = data_catalog(libri_dir)
+        
+        # 重新加载数据集
+        libri = data_catalog(libri_dir, pattern='**/*.npy')
         if len(libri) == 0:
             logging.warning('Have you converted flac files to wav? If not, run audio/convert_flac_2_wav.sh')
+            logging.warning('或者手动运行 python data_download_mini.py 下载和处理小型数据集')
             exit(1)
 
     global unique_speakers
@@ -84,20 +95,35 @@ def main(libri_dir=c.DATASET_DIR):
     logging.info('input shape: {}'.format(input_shape))
     logging.info('x.shape : {}'.format(x.shape))
     orig_time = time()
-    model = convolutional_model(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames)
-    logging.info(model.summary())
+    try:
+        # 添加详细日志，帮助调试形状问题
+        logging.info('构建模型时使用的输入形状: {}'.format(input_shape))
+        
+        # 确保输入形状合理
+        if num_frames is None or num_frames <= 0:
+            logging.warning('检测到无效的帧数: {}，使用默认值64'.format(num_frames))
+            num_frames = 64
+            input_shape = (num_frames, b.shape[1], b.shape[2])
+            
+        model = convolutional_model(input_shape=input_shape)
+        logging.info(model.summary())
+    except Exception as e:
+        logging.error('构建模型时出错: {}'.format(e))
+        logging.error('输入形状: {}'.format(input_shape))
+        logging.error('请检查数据预处理和批处理的形状是否匹配')
+        raise
     
     #----------------------------------------------------------------------------------------------
     gru_model = None
     if c.COMBINE_MODEL:
         if use_aamsoftmax_loss:
-            gru_model = recurrent_model(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames)
+            gru_model = recurrent_model(input_shape=input_shape)
         
         elif use_sigmoid_cross_entropy_loss:
-            gru_model = recurrent_model_sigmoid_cross_entropy(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames, num_spks=len(unique_speakers))
+            gru_model = recurrent_model_sigmoid_cross_entropy(input_shape=input_shape, num_frames=num_frames, num_spks=len(unique_speakers))
         
         elif use_cross_entropy_loss:
-            gru_model = recurrent_model_cross_entropy(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames, num_spks=len(unique_speakers))
+            gru_model = recurrent_model_cross_entropy(input_shape=input_shape, num_frames=num_frames, num_spks=len(unique_speakers))
         
         elif use_triplet_loss:
             gru_model = recurrent_model(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames)
@@ -117,7 +143,7 @@ def main(libri_dir=c.DATASET_DIR):
     grad_steps = 0
 
     if PRE_TRAIN:
-        last_checkpoint = get_last_checkpoint_if_any(c.PRE_CHECKPOINT_FOLDER)
+        last_checkpoint = get_last_checkpoint(c.PRE_CHECKPOINT_FOLDER)
         if last_checkpoint is not None:
             logging.info('Found pre-training checkpoint [{}]. Resume from here...'.format(last_checkpoint))
             x = model.output
@@ -128,14 +154,14 @@ def main(libri_dir=c.DATASET_DIR):
             logging.info('Successfully loaded pre-training model')
 
     else:
-        last_checkpoint = get_last_checkpoint_if_any(c.CHECKPOINT_FOLDER)
+        last_checkpoint = get_last_checkpoint(c.CHECKPOINT_FOLDER)
         if last_checkpoint is not None:
             logging.info('Found checkpoint [{}]. Resume from here...'.format(last_checkpoint))
             model.load_weights(last_checkpoint)
             grad_steps = int(last_checkpoint.split('_')[-2])
             logging.info('[DONE]')
         if c.COMBINE_MODEL:
-            last_checkpoint = get_last_checkpoint_if_any(c.GRU_CHECKPOINT_FOLDER)
+            last_checkpoint = get_last_checkpoint(c.GRU_CHECKPOINT_FOLDER)
             if last_checkpoint is not None:
                 logging.info('Found checkpoint [{}]. Resume from here...'.format(last_checkpoint))
                 gru_model.load_weights(last_checkpoint)
@@ -178,21 +204,37 @@ def main(libri_dir=c.DATASET_DIR):
     logging.info('Starting training...')
     lasteer = 10
     eer = 1
+    start_time = time()
     while True:
         orig_time = time()
         x, y = select_batch.best_batch(model, batch_size=c.BATCH_SIZE)
         y_true = [spk_index[one_id] for one_id in y]
         print("select_batch_time:", time() - orig_time)
 
-        logging.info('== Presenting step #{0}'.format(grad_steps))
+        # Show progress information if max_steps is provided
+        if max_steps is not None:
+            progress_percent = (grad_steps / max_steps) * 100
+            elapsed_time = time() - start_time
+            estimated_total_time = elapsed_time / (grad_steps + 1) * max_steps
+            estimated_remaining_time = estimated_total_time - elapsed_time
+            
+            logging.info('== Presenting step #{0}/{1} ({2:.1f}%) - Est. time remaining: {3:.2f}s'.format(
+                grad_steps, max_steps, progress_percent, estimated_remaining_time))
+        else:
+            logging.info('== Presenting step #{0}'.format(grad_steps))
         orig_time = time()
 
+        # Enable the CNN model training if needed (currently commented out)
         # loss = model.train_on_batch(x, y_true)
         loss = 0
         logging.info('== Processed in {0:.2f}s by the network, training loss = {1}.'.format(time() - orig_time, loss))
+        
+        # Train the GRU model if combined approach is enabled
         if c.COMBINE_MODEL:
+            train_start = time()
             loss1 = gru_model.train_on_batch(x, y_true)
-            logging.info( '== Processed in {0:.2f}s by the gru-network, training loss = {1}.'.format(time() - orig_time, loss1))
+            train_time = time() - train_start
+            logging.info('== Processed in {0:.2f}s by the gru-network, training loss = {1}.'.format(train_time, loss1))
             with open(c.GRU_CHECKPOINT_FOLDER + '/losses_gru.txt', "a") as f:
                 f.write("{0},{1}\n".format(grad_steps, loss1))
         # record training loss
@@ -215,9 +257,9 @@ def main(libri_dir=c.DATASET_DIR):
         # checkpoints are really heavy so let's just keep the last one.
         if (grad_steps ) % c.SAVE_PER_EPOCHS == 0:
             create_dir_and_delete_content(c.CHECKPOINT_FOLDER)
-            model.save_weights('{0}/model_{1}_{2:.5f}.h5'.format(c.CHECKPOINT_FOLDER, grad_steps, loss))
+            model.save_weights('{0}/model_{1}_{2:.5f}.weights.h5'.format(c.CHECKPOINT_FOLDER, grad_steps, loss))
             if c.COMBINE_MODEL:
-                gru_model.save_weights('{0}/grumodel_{1}_{2:.5f}.h5'.format(c.GRU_CHECKPOINT_FOLDER, grad_steps, loss1))
+                gru_model.save_weights('{0}/grumodel_{1}_{2:.5f}.weights.h5'.format(c.GRU_CHECKPOINT_FOLDER, grad_steps, loss1))
             if eer < lasteer:
                 files = sorted(filter(lambda f: os.path.isfile(f) and f.endswith(".h5"),
                                       map(lambda f: os.path.join(c.BEST_CHECKPOINT_FOLDER, f), os.listdir(c.BEST_CHECKPOINT_FOLDER))),
@@ -226,7 +268,7 @@ def main(libri_dir=c.DATASET_DIR):
                 for file in files[:-4]:
                     logging.info("removing old model: {}".format(file))
                     os.remove(file)
-                model.save_weights(c.BEST_CHECKPOINT_FOLDER+'/best_model{0}_{1:.5f}.h5'.format(grad_steps, eer))
+                model.save_weights(c.BEST_CHECKPOINT_FOLDER+'/best_model{0}_{1:.5f}.weights.h5'.format(grad_steps, eer))
                 if c.COMBINE_MODEL:
                     files = sorted(filter(lambda f: os.path.isfile(f) and f.endswith(".h5"),
                                           map(lambda f: os.path.join(c.BEST_CHECKPOINT_FOLDER, f),
@@ -236,13 +278,25 @@ def main(libri_dir=c.DATASET_DIR):
                     for file in files[:-4]:
                         logging.info("removing old model: {}".format(file))
                         os.remove(file)
-                    gru_model.save_weights(c.BEST_CHECKPOINT_FOLDER+'/best_gru_model{0}_{1:.5f}.h5'.format(grad_steps, eer))
+                    gru_model.save_weights(c.BEST_CHECKPOINT_FOLDER+'/best_gru_model{0}_{1:.5f}.weights.h5'.format(grad_steps, eer))
 
         grad_steps += 1
+        
+        # Check if we've reached the maximum number of steps
+        if max_steps is not None and grad_steps >= max_steps:
+            logging.info(f'Reached maximum number of steps ({max_steps}). Training complete.')
+            break
 
 
 
 if __name__ == '__main__':
     logging.basicConfig(handlers=[logging.StreamHandler(stream=sys.stdout)], level=logging.INFO,
                         format='%(asctime)-15s [%(levelname)s] %(filename)s/%(funcName)s | %(message)s')
-    main()
+    
+    # Parse command line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='Train the voiceprint recognition model.')
+    parser.add_argument('--max_steps', type=int, default=None, help='Maximum number of training steps')
+    args = parser.parse_args()
+    
+    main(max_steps=args.max_steps)

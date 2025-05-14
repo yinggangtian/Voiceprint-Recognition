@@ -2,11 +2,12 @@
 import os
 import sys
 import logging
-import numpy as np
+import argparse
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.optimizers import Adam
+from time import time
 
 import constants as c
 from utils import load_metadata, build_label_map, split_metadata, get_last_checkpoint, clean_old_checkpoints
@@ -35,28 +36,34 @@ def initialize_model(input_shape, no_of_speakers):
     return model
 
 # ─── 动态填充函数 ───────────────────────────────────────────
-def pad_and_stack(melspecs, labels):
+def pad_and_stack(batch_data):
     """
     将一个批次内的 Mel 频谱图填充到相同的最大长度，并将它们堆叠起来。
 
     Args:
-        melspecs: 一批 Mel 频谱图，每个形状为 (c.NUM_MELS, time_frames)
-        labels: 对应的标签
+        batch_data: 一个批次的数据，它是一个元组列表，其中每个元组是 (melspec, label)。
+                    melspec 的形状为 (c.NUM_MELS, time_frames)。
 
     Returns:
         一个元组 (padded_melspecs, labels)，其中：
             - padded_melspecs 的形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)。
             - labels 的形状为 (batch_size, num_speakers)。
     """
-    # 使用 TensorFlow 操作来获取每个 melspec 的时间帧数
-    shapes = tf.shape(melspecs)
-    # 对于批次 melspecs，shapes 是 [batch_size, c.NUM_MELS, max_time_frames]
-    # 我们需要获取 max_time_frames
-    max_time_frames = shapes[2]
+    melspecs, labels = batch_data # 从批次数据中解压出 Mel 频谱图和标签
+    # Find the maximum time_frames in the batch
+    max_time_frames = max(spec.shape[1] for spec in melspecs) # 找到该批次中最长的时序长度
 
-    # 由于输入已经是 padded 的批次数据，我们无需再次填充和堆叠
-    # 只需直接添加通道维度
-    padded_melspecs = tf.expand_dims(melspecs, axis=-1)  # 添加通道维度，形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)
+    # Pad each melspec to max_time_frames
+    padded_melspecs = []
+    for spec in melspecs:
+        pad_width = max_time_frames - spec.shape[1] # 计算需要填充的宽度
+        # Pad only the time dimension (axis 1)
+        padded_spec = tf.pad(spec, [[0, 0], [0, pad_width]], mode='CONSTANT') # 仅在时间维度上填充
+        padded_melspecs.append(padded_spec)
+
+    # Stack the padded melspecs into a single tensor
+    padded_melspecs = tf.stack(padded_melspecs, axis=0)  # Shape: (batch_size, c.NUM_MELS, max_time_frames)
+    padded_melspecs = tf.expand_dims(padded_melspecs, axis=-1) # Add channel dimension # 添加通道维度，使其形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)
 
     # Convert labels to a TensorFlow tensor
     labels = tf.stack(labels, axis=0) # 将标签堆叠成一个张量
@@ -82,20 +89,8 @@ def paths_to_loaders(metadata, melspec_dir, label_map, batch_size):
         生成器函数，用于按需加载 Mel 频谱图和标签。
         """
         for index, row in metadata.iterrows(): # 遍历元数据中的每一行
-            # 获取说话人ID和文件名
-            speaker_id = str(row['speaker_id'])  # 确保是字符串
-            file_name = os.path.splitext(os.path.basename(row['file_path']))[0]
-            
-            # 构建符合实际文件名格式的路径
-            melspec_path = os.path.join(melspec_dir, row['subset'], f"{speaker_id}_{file_name}.npy")
-            
-            try:
-                melspec = np.load(melspec_path) # 加载 Mel 频谱图
-            except FileNotFoundError:
-                # 记录错误但继续处理（以防特定文件缺失）
-                print(f"警告：找不到文件 {melspec_path}")
-                continue
-                
+            melspec_path = os.path.join(melspec_dir, row['filename'] + '.npy') # 构建 Mel 频谱图的完整路径
+            melspec = np.load(melspec_path) # 加载 Mel 频谱图
             label = label_map[row['speaker_id']] # 获取说话人对应的数字标签
             # Convert label to one-hot encoding *inside* the generator
             one_hot_label = tf.one_hot(label, depth=len(label_map)) # 将数字标签转换为 one-hot 编码
@@ -109,34 +104,13 @@ def paths_to_loaders(metadata, melspec_dir, label_map, batch_size):
             tf.TensorSpec(shape=(len(label_map),), dtype=tf.float32), #one hot # 指定标签的形状
         )
     )
-    
-    # 检查数据集是否为空
-    empty_dataset = True
-    try:
-        for _ in dataset.take(1):
-            empty_dataset = False
-            break
-    except:
-        pass
-    
-    if empty_dataset:
-        print(f"警告：数据集为空，无法加载任何梅尔频谱图。请检查 '{melspec_dir}' 目录及子目录中的文件。")
-        # 返回一个占位的空数据集
-        return tf.data.Dataset.from_tensors(
-            (tf.zeros([c.NUM_MELS, 10]), tf.zeros([len(label_map)]))
-        ).repeat(0)  # 重复0次，即空数据集
-    
-    # 使用 padded_batch 明确指定填充形状
-    dataset = dataset.padded_batch(
-        batch_size,
-        padded_shapes=([c.NUM_MELS, None], [len(label_map)]),
-        padding_values=(tf.constant(0.0, dtype=tf.float32), tf.constant(0.0, dtype=tf.float32))
-    ).map(pad_and_stack)
+    # Use padded_batch and set padding shape
+    dataset = dataset.batch(batch_size).map(pad_and_stack) # Use the new pad_and_stack function # 使用 padded_batch 进行批处理和动态填充
 
     return dataset # 返回构建好的 TensorFlow Dataset
 
 # ─── 训练模型函数 ───────────────────────────────────────────
-def train_model(model, train_loader, test_loader):
+def train_model(model, train_loader, test_loader, max_steps=None):
     """
     训练模型。
 
@@ -144,6 +118,7 @@ def train_model(model, train_loader, test_loader):
         model: 要训练的 Keras 模型。
         train_loader: 训练数据加载器（TensorFlow Dataset）。
         test_loader: 测试数据加载器（TensorFlow Dataset）。
+        max_steps: 最大训练步数。如果为 None，则无限训练。
     """
     steps = 0 # 初始化训练步数
     last_ckpt = get_last_checkpoint(c.PRE_CHECKPOINT_FOLDER) # 获取最后一个检查点
@@ -151,10 +126,21 @@ def train_model(model, train_loader, test_loader):
         model.load_weights(last_ckpt) # 如果存在检查点，则加载权重
         steps = int(last_ckpt.split('_')[-2]) # 从检查点文件名中提取步数
 
+    start_time = time()
+
     while True: # 无限循环，直到达到所需的训练轮数或满足其他停止条件
         for x, y in train_loader: # Iterate through the tf.data.Dataset # 从训练数据加载器中获取一个批次的训练数据
             loss, acc = model.train_on_batch(x, y) # 在该批次上进行训练，并获取损失和准确率
-            logging.info(f"Step {steps} — train loss={loss:.4f}, acc={acc:.4f}") # 打印训练信息
+            
+            # 显示进度信息（如果设置了最大步数）
+            if max_steps is not None:
+                progress_percent = (steps / max_steps) * 100
+                elapsed_time = time() - start_time
+                estimated_total_time = elapsed_time / (steps + 1) * max_steps
+                estimated_remaining_time = estimated_total_time - elapsed_time
+                logging.info(f"Step {steps}/{max_steps} ({progress_percent:.1f}%) — train loss={loss:.4f}, acc={acc:.4f} — Est. remaining: {estimated_remaining_time:.2f}s") # 打印训练信息
+            else:
+                logging.info(f"Step {steps} — train loss={loss:.4f}, acc={acc:.4f}") # 打印训练信息
 
             if steps % c.TEST_PER_EPOCHS == 0: # 每 c.TEST_PER_EPOCHS 步进行一次测试
                 for xt, yt in test_loader:
@@ -165,15 +151,26 @@ def train_model(model, train_loader, test_loader):
             if steps % c.SAVE_PER_EPOCHS == 0: # 每 c.SAVE_PER_EPOCHS 步保存一次模型
                 clean_old_checkpoints(c.PRE_CHECKPOINT_FOLDER, keep_latest=3) # 清理旧的检查点，仅保留最新的 3 个
                 model.save_weights(
-                    os.path.join(c.PRE_CHECKPOINT_FOLDER, f"model_{steps}_{loss:.4f}.weights.h5") # 保存模型权重，必须以 .weights.h5 结尾
+                    os.path.join(c.PRE_CHECKPOINT_FOLDER, f"model_{steps}_{loss:.4f}.weights.h5") # 保存模型权重
                 )
+            
             steps += 1 # 增加训练步数
+            
+            # 检查是否达到最大步数
+            if max_steps is not None and steps >= max_steps:
+                logging.info(f"已达到最大步数 ({max_steps})。训练完成。")
+                return
 
 # ─── 主入口 ───────────────────────────────────────────
 def main():
     """
     主函数，用于执行整个训练流程。
     """
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='预训练声纹识别模型。')
+    parser.add_argument('--max_steps', type=int, default=None, help='最大训练步数')
+    args = parser.parse_args()
+    
     logging.basicConfig(
         handlers=[logging.StreamHandler(sys.stdout)], # 将日志输出到标准输出
         level=logging.INFO, # 设置日志级别为 INFO
@@ -190,7 +187,7 @@ def main():
     # 新的输入形状
     input_shape = (c.NUM_MELS, None, c.CHANNELS)  # e.g. (64, None, 1) # 定义模型的输入形状，时间维度为 None，表示动态长度
     model = initialize_model(input_shape, no_of_speakers=len(label_map)) # 初始化模型
-    train_model(model, train_loader, test_loader) # 训练模型
+    train_model(model, train_loader, test_loader, max_steps=args.max_steps) # 训练模型
 
 if __name__ == "__main__":
     main() # 执行主函数

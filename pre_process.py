@@ -61,13 +61,37 @@ def extract_features(signal=np.random.uniform(size=48000), target_sample_rate=SA
     return np.reshape(np.array(frames_features),(num_frames, 64, 1))   #(num_frames,64, 1)
 
 def data_catalog(dataset_dir=c.DATASET_DIR, pattern='*.npy'):
+    print(f"DEBUG: data_catalog 搜索路径: {dataset_dir}，模式: {pattern}")
     libri = pd.DataFrame()
-    libri['filename'] = find_files(dataset_dir, pattern=pattern)
+    files = find_files(dataset_dir, pattern=pattern)
+    print(f"DEBUG: 找到 {len(files)} 个文件")
+    if len(files) > 0:
+        print(f"DEBUG: 示例文件: {files[0]}")
+    
+    libri['filename'] = files
     libri['filename'] = libri['filename'].apply(lambda x: x.replace('\\', '/'))  # normalize windows paths
-    libri['speaker_id'] = libri['filename'].apply(lambda x: x.rsplit('/', maxsplit=3)[1])
+    
+    # 提取说话人ID
+    if '**/*.wav' in pattern or '**/*.flac' in pattern:
+        # 处理wav/flac文件，从路径结构中提取说话人ID
+        # LibriSpeech格式: .../speaker_id/chapter_id/speaker_id-chapter_id-utterance_id.wav
+        libri['speaker_id'] = libri['filename'].apply(lambda x: x.split('/')[-3])
+    else:
+        # 处理npy文件，从文件名中提取说话人ID
+        # 期望npy文件格式: {speaker_id}_{recording_id}.npy
+        libri['speaker_id'] = libri['filename'].apply(lambda x: os.path.basename(x).split('_')[0])
+    
     num_speakers = len(libri['speaker_id'].unique())
     print('Found {} files with {} different speakers.'.format(str(len(libri)).zfill(7), str(num_speakers).zfill(5)))
-    # print(libri.head(10))
+    if num_speakers > 0:
+        print(f"DEBUG: 发现的说话人: {libri['speaker_id'].unique()[:10]}...")
+        print(f"DEBUG: 每个说话人的样本数量: ")
+        speaker_counts = libri['speaker_id'].value_counts()
+        # 修复：在Python 3中，.items()返回迭代器，不能直接切片
+        for i, (speaker, count) in enumerate(speaker_counts.items()):
+            if i >= 10:
+                break
+            print(f"    说话人 {speaker}: {count} 个样本")
     return libri
 
 
@@ -79,12 +103,13 @@ def preprocess_sync(wav_dir=c.WAV_DIR,out_dir=c.DATASET_DIR):
     
     for i in range(len(libri)):
         filename = libri[i:i+1]['filename'].values[0]
-
-        #['/home/dengwl/hjs/Deep_Speaker_exp/audio/voxceleb/vox_test', 'id10003', 'E_6MjfYr0sQ', '00003.wav']
-        _,s1,s2,s3 = filename.rsplit('/', maxsplit=3)
-        s3 = s3.split('.')[0]
-
-        newfilename = f'{s1}_{s2}_{s3}.npy'
+        speaker_id = libri[i:i+1]['speaker_id'].values[0]
+        
+        # 获取文件基本名称，移除路径和扩展名
+        base_name = os.path.basename(filename).split('.')[0]
+        
+        # 创建NPY文件名: speaker_id_utterance_id.npy
+        newfilename = f'{speaker_id}_{base_name}.npy'
 
         target_filename = os.path.join(out_dir,newfilename)
         target_filename = target_filename.replace('\\', '/')
@@ -106,8 +131,11 @@ def prep(libri,out_dir=c.DATASET_DIR,name='0'):
     for i in range(len(libri)):
         orig_time = time()
         filename = libri[i:i+1]['filename'].values[0]
-
-        newname = filename.split("/")[-1].split('.')[0] + '.npy'
+        speaker_id = libri[i:i+1]['speaker_id'].values[0]
+        
+        # 对于LibriSpeech格式，创建格式为 "speaker_id_utterance_id.npy" 的文件名
+        base_name = os.path.basename(filename).split('.')[0]  # 去掉扩展名
+        newname = f"{speaker_id}_{base_name}.npy"
         target_filename = os.path.join(out_dir, newname)
 
         if os.path.exists(target_filename):

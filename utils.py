@@ -300,7 +300,7 @@ def paths_to_loaders(meta_df, feature_root, label_map, batch_size, loader_fn=bat
 # VAD（语音活动检测）函数
 # ----------------------------------------
 
-def vad_trim(audio, sr, silence_threshold_db=20):
+def vad(audio, sr, silence_threshold_db=20):
     """
     基于VAD裁剪音频，移除静音段
     
@@ -397,6 +397,26 @@ def clean_old_checkpoints(checkpoint_dir, keep_latest=4):
     for old in sorted_files[:-keep_latest]:
         logging.info(f"删除旧模型: {old}")
         os.remove(old)
+
+
+def create_dir_and_delete_content(directory):
+    """
+    创建目录（如果不存在）并删除其中的所有文件
+    
+    参数:
+        directory: 要创建或清空的目录路径
+    """
+    # 创建目录（如果不存在）
+    os.makedirs(directory, exist_ok=True)
+    
+    # 删除目录中的所有文件
+    for file in os.listdir(directory):
+        file_path = os.path.join(directory, file)
+        try:
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+        except Exception as e:
+            logging.warning(f"删除文件 {file_path} 时出错: {e}")
 
 
 # ----------------------------------------

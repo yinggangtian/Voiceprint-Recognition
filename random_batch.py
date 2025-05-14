@@ -20,6 +20,11 @@ from pre_process import data_catalog
 
 
 def clipped_audio(x, num_frames=c.NUM_FRAMES):
+    # 处理 num_frames 为 None 的情况
+    if num_frames is None:
+        # 如果未指定帧数，直接返回原始数据
+        return x
+    
     if x.shape[0] > num_frames:
         bias = np.random.randint(0, x.shape[0] - num_frames)
         clipped_x = x[bias: num_frames + bias]
@@ -70,13 +75,67 @@ class MiniBatch:
         self.num_triplets = num_triplets
 
     def to_inputs(self):
-
         new_x = []
+        max_frames = 0
+        feature_dim = 64  # 标准特征维度
+        channel_dim = 1   # 标准通道数
+        
+        # 第一轮：加载所有音频并找出最大帧数
+        loaded_audios = []
         for i in range(len(self.libri_batch)):
             filename = self.libri_batch[i:i + 1]['filename'].values[0]
             x = np.load(filename)
-            new_x.append(clipped_audio(x))
-        x = np.array(new_x) #(batchsize, num_frames, 64, 1)
+            x_clipped = clipped_audio(x)
+            
+            # 确保数据形状一致
+            if len(x_clipped.shape) == 1:
+                # 如果只有一个维度，reshape 为 (frames, features)
+                frames = len(x_clipped)
+                x_clipped = x_clipped.reshape(frames, 1)
+            
+            if len(x_clipped.shape) == 2:
+                # 如果只有两个维度 (frames, features)，添加通道维度
+                x_clipped = np.expand_dims(x_clipped, axis=2)
+                
+            # 更新特征和通道维度 (如果需要)
+            feature_dim = max(feature_dim, x_clipped.shape[1]) 
+            channel_dim = max(channel_dim, x_clipped.shape[2])
+            
+            loaded_audios.append(x_clipped)
+            max_frames = max(max_frames, x_clipped.shape[0])
+            
+        # 第二轮：应用填充（padding）使所有样本具有相同长度
+        for x_clipped in loaded_audios:
+            # 创建填充后的数组 - 确保所有样本具有相同的形状
+            padded = np.zeros((max_frames, feature_dim, channel_dim), dtype=np.float32)
+            
+            # 复制原始数据，安全地处理各种维度
+            frames_to_copy = min(x_clipped.shape[0], max_frames)
+            
+            # 根据输入数据的维度安全地处理
+            if len(x_clipped.shape) == 3:
+                feat_to_copy = min(x_clipped.shape[1], feature_dim)
+                chan_to_copy = min(x_clipped.shape[2], channel_dim)
+                padded[:frames_to_copy, :feat_to_copy, :chan_to_copy] = x_clipped[:frames_to_copy, :feat_to_copy, :chan_to_copy]
+            elif len(x_clipped.shape) == 2:
+                feat_to_copy = min(x_clipped.shape[1], feature_dim)
+                padded[:frames_to_copy, :feat_to_copy, 0] = x_clipped[:frames_to_copy, :feat_to_copy]
+            else:
+                # 处理极端情况
+                padded[:frames_to_copy, 0, 0] = x_clipped[:frames_to_copy]
+                
+            new_x.append(padded)
+        
+        # 将列表转换为numpy数组
+        try:
+            x = np.array(new_x) #(batchsize, max_frames, feature_dim, channel_dim)
+            print(f"批次数据形状: {x.shape}")
+        except ValueError as e:
+            print("创建数组失败，检查形状:", e)
+            # 打印每个数组的形状以便调试
+            for i, arr in enumerate(new_x):
+                print(f"数组 {i} 形状: {arr.shape}")
+            raise
         y = self.libri_batch['speaker_id'].values
 
         # anchor examples [speakers] == positive examples [speakers]
