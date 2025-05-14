@@ -372,7 +372,9 @@ def get_last_checkpoint(checkpoint_dir):
         最新的检查点文件路径，如果没有则返回 None
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
-    files = [os.path.join(checkpoint_dir, f) for f in os.listdir(checkpoint_dir) if f.endswith('.h5')]
+    # 同时识别 .h5 和 .weights.h5 扩展名，以兼容新旧格式
+    files = [os.path.join(checkpoint_dir, f) for f in os.listdir(checkpoint_dir) 
+             if f.endswith('.h5') or f.endswith('.weights.h5')]
     if not files:
         return None
     return natural_sort(files)[-1]
@@ -386,7 +388,9 @@ def clean_old_checkpoints(checkpoint_dir, keep_latest=4):
         checkpoint_dir: 检查点目录
         keep_latest: 保留的最新检查点数量
     """
-    files = [os.path.join(checkpoint_dir, f) for f in os.listdir(checkpoint_dir) if f.endswith('.h5')]
+    # 同时识别 .h5 和 .weights.h5 扩展名，以兼容新旧格式
+    files = [os.path.join(checkpoint_dir, f) for f in os.listdir(checkpoint_dir) 
+             if f.endswith('.h5') or f.endswith('.weights.h5')]
     sorted_files = sorted(files, key=os.path.getmtime)
     
     # 删除旧的检查点文件
