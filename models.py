@@ -218,7 +218,14 @@ def recurrent_model_softmax(input_shape=(c.NUM_FRAMES, 64, 1),
 
     x = SwitchNormalization(axis=-1)(x)
     x = clipped_relu(x)
-    x = Lambda(lambda y: K.reshape(y, (-1, math.ceil(num_frames / 2), 2048)), name='reshape')(x) #shape = (BATCH_SIZE , num_frames/2, 2048)
+    
+    # Reshape the output of convolution layer in a dynamic way to fit the GRU input
+    x = Lambda(lambda y: tf.reshape(
+        y, 
+        [tf.shape(y)[0], 
+         tf.shape(y)[1], 
+         tf.shape(y)[2] * tf.shape(y)[3]]  # Flattening last two dimensions
+    ), name='reshape')(x) #shape = (BATCH_SIZE, time_steps, features)
     x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)  #shape = (BATCH_SIZE , num_frames/2, 1024)
     x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)
     x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)  #shape = (BATCH_SIZE , num_frames/2, 1024)
@@ -229,6 +236,7 @@ def recurrent_model_softmax(input_shape=(c.NUM_FRAMES, 64, 1),
     x = clipped_relu(x)
     x = Dropout(0.5)(x)
 
+    # Final softmax layer for classification
     x = Dense(num_spks, activation='softmax')(x)
 
     model = Model(inputs, x, name='recurrent_softmax')
@@ -248,7 +256,11 @@ def recurrent_model_sigmoid_cross_entropy(input_shape=(c.NUM_FRAMES, 64, 1),
 
     x = SwitchNormalization(axis=-1)(x)
     x = clipped_relu(x)
-    x = Lambda(lambda y: K.reshape(y, (-1, math.ceil(num_frames / 2), 2048)), name='reshape')(x) #shape = (BATCH_SIZE , num_frames/2, 2048)
+    # 使用动态reshape，避免固定大小
+    x = Lambda(lambda y: tf.reshape(
+        y, 
+        [tf.shape(y)[0], tf.shape(y)[1], tf.shape(y)[2] * tf.shape(y)[3]]
+    ), name='reshape')(x) #shape = (BATCH_SIZE, time_steps, features)
     x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)  #shape = (BATCH_SIZE , num_frames/2, 1024)
     x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)
     x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)  #shape = (BATCH_SIZE , num_frames/2, 1024)
@@ -273,4 +285,27 @@ def recurrent_model_cross_entropy(input_shape=(c.NUM_FRAMES, 64, 1),
     inputs = Input(shape=input_shape)
     #x = Permute((2,1))(inputs)
     x = Conv2D(64,kernel_size=5,strides=2,padding='same',kernel_initializer='glorot_uniform',kernel_regularizer=regularizers.l2(0.0001))(inputs)
-    # x = BatchNormalization()(x)  #shape = (BATCH_SIZE , num_frames/2, 64/2,
+    # x = BatchNormalization()(x)  #shape = (BATCH_SIZE , num_frames/2, 64/2, 64)
+
+    x = SwitchNormalization(axis=-1)(x)
+    x = clipped_relu(x)
+    # 使用动态reshape，避免固定大小
+    x = Lambda(lambda y: tf.reshape(
+        y, 
+        [tf.shape(y)[0], tf.shape(y)[1], tf.shape(y)[2] * tf.shape(y)[3]]
+    ), name='reshape')(x) #shape = (BATCH_SIZE, time_steps, features)
+    x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)  #shape = (BATCH_SIZE , num_frames/2, 1024)
+    x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)
+    x = GRU(1024,return_sequences=True,dropout=0.1,recurrent_dropout=0.5)(x)  #shape = (BATCH_SIZE , num_frames/2, 1024)
+    x = Lambda(lambda y: K.mean(y, axis=1), name='average')(x) #shape = (BATCH_SIZE, 1024)
+
+    x = Dropout(0.5)(x)
+    x = Dense(512)(x)  #shape = (BATCH_SIZE, 512)
+    x = clipped_relu(x)
+    x = Dropout(0.5)(x)
+
+    x = Dense(num_spks)(x)
+    model = Model(inputs, x, name='recurrent_cross_entropy')
+
+    print(model.summary())
+    return model

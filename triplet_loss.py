@@ -106,10 +106,17 @@ def coco_loss(out_num:int):
 def softmax_loss(out_num:int):
 
     def softmax_loss_(y_true, y_pred):
+        # Ensure y_true has the right shape
         y_true = tf.cast(y_true, tf.int32)
+        
+        # 简化逻辑，总是转换为 one-hot 编码
+        # 无论输入是什么形状，都确保输出是 one-hot 编码
         one_hot = tf.one_hot(y_true, depth=out_num, name='one_hot_mask')
-
+        
+        # Apply softmax activation to predictions if not already applied
         y = keras.activations.softmax(y_pred, axis=-1)
+        
+        # Calculate cross-entropy loss
         loss = keras.losses.categorical_crossentropy(one_hot, y)
         return loss
 

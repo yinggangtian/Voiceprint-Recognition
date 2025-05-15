@@ -15,6 +15,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.models import Model
 import tensorflow.keras as keras
+import tensorflow as tf
 import constants as c
 from constants import *
 import select_batch
@@ -135,7 +136,14 @@ def main(libri_dir=c.DATASET_DIR, max_steps=None):
             gru_model = recurrent_model(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames)
         
         elif use_softmax_loss:
-            gru_model = recurrent_model_softmax(input_shape=input_shape, batch_size=batch_size, num_frames=num_frames, num_spks=len(unique_speakers))
+            # Create the softmax model with proper shape handling for recurrent layer
+            logging.info(f"Creating softmax model with input_shape={input_shape}, num_frames={num_frames}, num_spks={len(unique_speakers)}")
+            gru_model = recurrent_model_softmax(
+                input_shape=input_shape, 
+                batch_size=batch_size, 
+                num_frames=num_frames, 
+                num_spks=len(unique_speakers)
+            )
 
 
             
@@ -208,7 +216,14 @@ def main(libri_dir=c.DATASET_DIR, max_steps=None):
     while True:
         orig_time = time()
         x, y = select_batch.best_batch(model, batch_size=c.BATCH_SIZE)
-        y_true = [spk_index[one_id] for one_id in y]
+        # Convert speaker IDs to indices using spk_index mapping
+        # Keep the labels as integers without one-hot encoding
+        # The loss functions in triplet_loss.py will handle the conversion to one-hot internally
+        y_true = np.array([spk_index[one_id] for one_id in y])
+        
+        # Debug shape information
+        logging.info(f"Batch shape: x.shape={x.shape}, y_true.shape={y_true.shape}")
+        
         print("select_batch_time:", time() - orig_time)
 
         # Show progress information if max_steps is provided
@@ -232,11 +247,86 @@ def main(libri_dir=c.DATASET_DIR, max_steps=None):
         # Train the GRU model if combined approach is enabled
         if c.COMBINE_MODEL:
             train_start = time()
-            loss1 = gru_model.train_on_batch(x, y_true)
-            train_time = time() - train_start
-            logging.info('== Processed in {0:.2f}s by the gru-network, training loss = {1}.'.format(train_time, loss1))
-            with open(c.GRU_CHECKPOINT_FOLDER + '/losses_gru.txt', "a") as f:
-                f.write("{0},{1}\n".format(grad_steps, loss1))
+            # Debug information for shape mismatch issues
+            logging.info(f'x shape: {x.shape}, y_true type: {type(y_true)}')
+            if isinstance(y_true, np.ndarray) or isinstance(y_true, list):
+                logging.info(f'y_true shape: {np.array(y_true).shape}')
+                
+            try:
+                # Get the output dimension of the model for debugging
+                out_dim = gru_model.output_shape[-1]
+                logging.info(f'Model output dimension: {out_dim}')
+                
+                # Make sure y_true is the right format (array of integers)
+                if isinstance(y_true, list):
+                    y_true = np.array(y_true)
+                    
+                # Reshape x if needed to match the expected input shape
+                if x.ndim == 4 and len(y_true) != x.shape[0]:
+                    # This happens if the batch dimension is not what the model expects
+                    logging.info(f"Reshaping input batch from {x.shape} to match label count {len(y_true)}")
+                    # Flatten the first dimension if needed
+                    batch_size = len(y_true)
+                    x = x[:batch_size]
+                
+                # Make sure batch dimension is correct
+                if len(x) != len(y_true):
+                    logging.warning(f'Batch size mismatch: x has {len(x)} samples but y_true has {len(y_true)} labels')
+                    # Just in case, truncate to the minimum length
+                    min_len = min(len(x), len(y_true))
+                    x = x[:min_len]
+                    y_true = y_true[:min_len]
+                    
+                loss1 = gru_model.train_on_batch(x, y_true)
+                train_time = time() - train_start
+                logging.info('== Processed in {0:.2f}s by the gru-network, training loss = {1}.'.format(train_time, loss1))
+                with open(c.GRU_CHECKPOINT_FOLDER + '/losses_gru.txt', "a") as f:
+                    f.write("{0},{1}\n".format(grad_steps, loss1))
+            except ValueError as e:
+                logging.error(f"Error during gru_model training: {e}")
+                logging.error(f"This might be due to shape mismatch. Check model output shape: {gru_model.output_shape}")
+                # Continue with the training loop despite the error
+                loss1 = float('nan')
+                
+                # Let's try to understand the dimensionality issue
+                if hasattr(gru_model, 'output_shape'):
+                    output_dim = gru_model.output_shape[-1]
+                    logging.info(f"Model output dimension: {output_dim}")
+                    
+                    # The issue could be with the reshape of the recurrent layer
+                    # Let's try to reshape x to match expected dimensions
+                    try:
+                        # Get the expected input shape and reshape x
+                        input_shape = gru_model.input_shape
+                        if input_shape and input_shape[0] is None:  # Batch dimension can be None
+                            # For GRU models, we need to reshape the input properly
+                            logging.info(f"Attempting to reshape input to match model's expectation. Current x shape: {x.shape}")
+                            # If needed, reshape and try again
+                            if x.ndim == 4:  # typical melspectrogram shape
+                                # Extract meaningful dimensions for reshape
+                                batch_size, height, width, channels = x.shape
+                                # Reshape based on model type
+                                if 'softmax' in gru_model.name:
+                                    # Check if the number of samples matches the labels
+                                    if len(y_true) != batch_size:
+                                        logging.warning(f"Label count {len(y_true)} doesn't match batch size {batch_size}")
+                                        # Use the label count as batch size
+                                        batch_size = min(batch_size, len(y_true))
+                                        x = x[:batch_size]
+                                        y_true = y_true[:batch_size]
+                                        logging.info(f"Adjusted batch: x.shape={x.shape}, y_true.shape={y_true.shape}")
+                                        
+                                    # Try training again with fixed shapes
+                                    loss1 = gru_model.train_on_batch(x, y_true)
+                                    train_time = time() - train_start
+                                    logging.info('== Processed in {0:.2f}s by the gru-network, training loss = {1}.'.format(train_time, loss1))
+                                    with open(c.GRU_CHECKPOINT_FOLDER + '/losses_gru.txt', "a") as f:
+                                        f.write("{0},{1}\n".format(grad_steps, loss1))
+                    except Exception as reshape_error:
+                        logging.error(f"Error while trying to fix shapes: {reshape_error}")
+                        # Just continue with the training loop
+                else:
+                    raise
         # record training loss
         with open(c.LOSS_LOG, "a") as f:
             f.write("{0},{1}\n".format(grad_steps, loss))

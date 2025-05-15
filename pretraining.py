@@ -3,6 +3,7 @@ import os
 import sys
 import logging
 import argparse
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense
@@ -36,39 +37,43 @@ def initialize_model(input_shape, no_of_speakers):
     return model
 
 # ─── 动态填充函数 ───────────────────────────────────────────
-def pad_and_stack(batch_data):
+@tf.function
+def pad_and_stack(melspecs, labels):
     """
     将一个批次内的 Mel 频谱图填充到相同的最大长度，并将它们堆叠起来。
-
     Args:
-        batch_data: 一个批次的数据，它是一个元组列表，其中每个元组是 (melspec, label)。
-                    melspec 的形状为 (c.NUM_MELS, time_frames)。
-
+        melspecs: 批次 Mel 频谱图，形状为 (batch, num_mels, time)
+        labels: 批次标签，one-hot，形状为 (batch, num_speakers)
     Returns:
-        一个元组 (padded_melspecs, labels)，其中：
-            - padded_melspecs 的形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)。
-            - labels 的形状为 (batch_size, num_speakers)。
+        padded_melspecs: (batch, num_mels, max_time, 1)
+        labels: (batch, num_speakers)
     """
-    melspecs, labels = batch_data # 从批次数据中解压出 Mel 频谱图和标签
-    # Find the maximum time_frames in the batch
-    max_time_frames = max(spec.shape[1] for spec in melspecs) # 找到该批次中最长的时序长度
-
-    # Pad each melspec to max_time_frames
-    padded_melspecs = []
-    for spec in melspecs:
-        pad_width = max_time_frames - spec.shape[1] # 计算需要填充的宽度
-        # Pad only the time dimension (axis 1)
-        padded_spec = tf.pad(spec, [[0, 0], [0, pad_width]], mode='CONSTANT') # 仅在时间维度上填充
-        padded_melspecs.append(padded_spec)
-
-    # Stack the padded melspecs into a single tensor
-    padded_melspecs = tf.stack(padded_melspecs, axis=0)  # Shape: (batch_size, c.NUM_MELS, max_time_frames)
-    padded_melspecs = tf.expand_dims(padded_melspecs, axis=-1) # Add channel dimension # 添加通道维度，使其形状为 (batch_size, c.NUM_MELS, max_time_frames, c.CHANNELS)
-
-    # Convert labels to a TensorFlow tensor
-    labels = tf.stack(labels, axis=0) # 将标签堆叠成一个张量
-
-    return padded_melspecs, labels # 返回填充后的 Mel 频谱图和标签
+    # 确保张量不是在Python循环中迭代
+    # 直接使用tf.shape获取时间维度的最大值
+    # 假设melspecs已经是批处理后的形状 [batch_size, mel_bands, time]
+    if len(tf.shape(melspecs)) == 3:
+        # 获取每个样本在第2维(时间维度)上的长度
+        max_time = tf.shape(melspecs)[2]
+        # 已经是批次张量，添加通道维度
+        padded_melspecs = tf.expand_dims(melspecs, axis=-1)
+    else:
+        # 为了向后兼容，如果输入是批次列表（tf.RaggedTensor或类似结构）
+        # 使用map_fn处理每个元素
+        def get_time_dim(x):
+            return tf.shape(x)[1]
+        
+        time_dims = tf.map_fn(get_time_dim, melspecs, fn_output_signature=tf.int32)
+        max_time = tf.reduce_max(time_dims)
+        
+        def pad_spec(spec):
+            pad_width = max_time - tf.shape(spec)[1]
+            padded = tf.pad(spec, [[0, 0], [0, pad_width]])
+            return padded
+            
+        padded_specs = tf.map_fn(pad_spec, melspecs, fn_output_signature=tf.float32)
+        padded_melspecs = tf.expand_dims(padded_specs, axis=-1)
+    
+    return padded_melspecs, labels
 
 # ─── 路径到加载器的修改版本 ───────────────────────────────────────────
 def paths_to_loaders(metadata, melspec_dir, label_map, batch_size):
@@ -89,12 +94,38 @@ def paths_to_loaders(metadata, melspec_dir, label_map, batch_size):
         生成器函数，用于按需加载 Mel 频谱图和标签。
         """
         for index, row in metadata.iterrows(): # 遍历元数据中的每一行
-            melspec_path = os.path.join(melspec_dir, row['filename'] + '.npy') # 构建 Mel 频谱图的完整路径
-            melspec = np.load(melspec_path) # 加载 Mel 频谱图
-            label = label_map[row['speaker_id']] # 获取说话人对应的数字标签
-            # Convert label to one-hot encoding *inside* the generator
-            one_hot_label = tf.one_hot(label, depth=len(label_map)) # 将数字标签转换为 one-hot 编码
-            yield melspec, one_hot_label # 产生 Mel 频谱图和 one-hot 编码的标签
+            try:
+                # 直接使用说话人ID和文件名构建melspec文件路径
+                # 这适用于prepare_test_data.py生成的测试数据
+                speaker_id = str(row['speaker_id'])
+                
+                if 'file_path' in row:
+                    # 从file_path中提取文件名部分
+                    file_path = row['file_path']
+                    file_name = os.path.basename(file_path)
+                    file_name_no_ext = os.path.splitext(file_name)[0]
+                    # 尝试直接在melspec_dir目录下查找文件
+                    melspec_path = os.path.join(melspec_dir, file_name_no_ext + '.npy')
+                    
+                    # 检查文件是否存在，如果不存在，尝试只使用说话人ID部分
+                    if not os.path.exists(melspec_path) and 'subset' in row:
+                        # 按数据下载工具生成的结构尝试
+                        subset = row['subset']
+                        melspec_path = os.path.join(melspec_dir, subset, f"{speaker_id}_{file_name_no_ext}.npy")
+                else:
+                    # 向后兼容，如果直接有filename列
+                    melspec_path = os.path.join(melspec_dir, row.get('filename', '') + '.npy')
+                
+                # 加载梅尔频谱图
+                melspec = np.load(melspec_path)
+                # 获取说话人对应的数字标签
+                label = label_map[row['speaker_id']]
+                # 将数字标签转换为 one-hot 编码
+                one_hot_label = tf.one_hot(label, depth=len(label_map))
+                # 产生 Mel 频谱图和 one-hot 编码的标签
+                yield melspec, one_hot_label
+            except (FileNotFoundError, KeyError) as e:
+                logging.warning(f"跳过文件 {melspec_path if 'melspec_path' in locals() else '未知路径'}: {e}")
 
     # Use tf.data.Dataset.from_generator
     dataset = tf.data.Dataset.from_generator(
@@ -104,8 +135,12 @@ def paths_to_loaders(metadata, melspec_dir, label_map, batch_size):
             tf.TensorSpec(shape=(len(label_map),), dtype=tf.float32), #one hot # 指定标签的形状
         )
     )
-    # Use padded_batch and set padding shape
-    dataset = dataset.batch(batch_size).map(pad_and_stack) # Use the new pad_and_stack function # 使用 padded_batch 进行批处理和动态填充
+    # 使用padded_batch处理不同长度的梅尔频谱图
+    dataset = dataset.padded_batch(
+        batch_size, 
+        padded_shapes=((c.NUM_MELS, None), (len(label_map),)),  # 指定填充形状
+        padding_values=(tf.constant(0.0, dtype=tf.float32), tf.constant(0.0, dtype=tf.float32))  # 填充值
+    ).map(pad_and_stack) # 使用 pad_and_stack 函数添加通道维度并处理张量
 
     return dataset # 返回构建好的 TensorFlow Dataset
 

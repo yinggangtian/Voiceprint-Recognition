@@ -10,7 +10,7 @@ from pre_process import data_catalog, preprocess_and_save
 from eval_metrics import evaluate
 from models import convolutional_model, recurrent_model
 from triplet_loss import deep_speaker_loss
-from utils import get_last_checkpoint_if_any, create_dir_and_delete_content
+from utils import get_last_checkpoint, create_dir_and_delete_content
 import tensorflow as tf
 
 num_neg = c.TEST_NEGATIVE_No
@@ -143,13 +143,13 @@ def eval_model(model,train_batch_size=c.BATCH_SIZE * c.TRIPLET_PER_BATCH, test_d
 if __name__ == '__main__':
     model = convolutional_model()
     gru_model = None
-    last_checkpoint = get_last_checkpoint_if_any(c.CHECKPOINT_FOLDER)
+    last_checkpoint = get_last_checkpoint(c.CHECKPOINT_FOLDER)
     if last_checkpoint is not None:
         print('Found checkpoint [{}]. Resume from here...'.format(last_checkpoint))
         model.load_weights(last_checkpoint)
     if c.COMBINE_MODEL:
         gru_model = recurrent_model()
-        last_checkpoint = get_last_checkpoint_if_any(c.GRU_CHECKPOINT_FOLDER)
+        last_checkpoint = get_last_checkpoint(c.GRU_CHECKPOINT_FOLDER)
         if last_checkpoint is not None:
             print('Found checkpoint [{}]. Resume from here...'.format(last_checkpoint))
             gru_model.load_weights(last_checkpoint)

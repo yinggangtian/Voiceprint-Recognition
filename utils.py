@@ -379,7 +379,6 @@ def get_last_checkpoint(checkpoint_dir):
         return None
     return natural_sort(files)[-1]
 
-
 def clean_old_checkpoints(checkpoint_dir, keep_latest=4):
     """
     清理旧的检查点文件，仅保留最新的几个
