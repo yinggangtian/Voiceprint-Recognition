@@ -6,13 +6,13 @@ renice -n -20 $$ &>/dev/null || true
 
 # ======== 一次性安装必要组件 ========
 echo "📦 安装优化组件..."
-apt-get update -qq &>/dev/null || true
-apt-get install -y -qq parallel sox libsox-fmt-all python3-pip &>/dev/null || true
+sudo apt-get update -qq &>/dev/null || true
+sudo apt-get install -y -qq parallel sox libsox-fmt-all python3-pip &>/dev/null || true
 pip install -q tqdm psutil &>/dev/null || true
 
 # ======== 配置参数 ========
 SRC_DIR="./audio/LibriSpeech"
-TEMP_DIR="/content/temp_conversion"
+TEMP_DIR="./temp_conversion"
 FLAC_LIST="$TEMP_DIR/all_flacs.txt"
 CONVERT_LOG="$TEMP_DIR/converted.log"
 PROGRESS_LOG="$TEMP_DIR/progress.txt"

@@ -1,8 +1,8 @@
-librosa
-pandas
-numpy
-torchaudio
-tqdm
-keras
-scikit-learn
-python_speech_features
+tensorflow==2.14
+pandas==2.2.3
+numpy==1.24.3
+torchaudio==2.7.0
+librosa==0.11.0
+tqdm==4.67.1
+matplotlib==3.10.3
+python_speech_features==0.6

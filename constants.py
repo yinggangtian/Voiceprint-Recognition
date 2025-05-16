@@ -2,7 +2,7 @@
 #==============================================================
 #使用LibriSpeech数据集
 DATASET_DIR = './melspec_small/'
-TEST_DIR = './melspec_small/'
+TEST_DIR = './melspec_small/test-clean/'
 WAV_DIR = './audio/LibriSpeech/'
 
 #使用voxceleb数据集
@@ -45,6 +45,12 @@ TEST_LOG= CHECKPOINT_FOLDER + '/acc_eer.txt'
 PRE_TRAIN = True
 
 COMBINE_MODEL = True
+
+
+# GPU 训练设置
+USE_GPU = False           # 是否使用 GPU 训练
+GPU_MEMORY_LIMIT = None  # GPU 内存限制，None 表示使用全部可用内存
+MIXED_PRECISION = True   # 是否使用混合精度训练 (可提高训练速度)
 
 #根据要训练的loss来设置，只能有一个true
 use_sigmoid_cross_entropy_loss = False

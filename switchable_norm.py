@@ -152,7 +152,7 @@ class SwitchNormalization(Layer):
         broadcast_shape[self.axis] = input_shape[self.axis]
         
         # 保存维度信息以便调试
-        self.input_shape = input_shape
+        self._input_tensor_shape = input_shape  # 修改变量名，避免与Keras内置属性冲突
         self.reduction_axes = reduction_axes
         self.broadcast_shape = broadcast_shape
         
