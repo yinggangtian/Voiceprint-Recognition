@@ -103,22 +103,17 @@ def coco_loss(out_num:int):
     return cosineface_losses
 
 
-def softmax_loss(out_num:int):
+def softmax_loss(out_num: int):
+    """
+    使用稀疏交叉熵：y_true 维度 (batch,), y_pred 维度 (batch, out_num)。
+    """
+    # from_logits=False 表示 y_pred 已经过 softmax；若输出是 logits，请设为 True
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False,
+                                                            reduction=tf.keras.losses.Reduction.NONE)
 
     def softmax_loss_(y_true, y_pred):
-        # Ensure y_true has the right shape
-        y_true = tf.cast(y_true, tf.int32)
-        
-        # 简化逻辑，总是转换为 one-hot 编码
-        # 无论输入是什么形状，都确保输出是 one-hot 编码
-        one_hot = tf.one_hot(y_true, depth=out_num, name='one_hot_mask')
-        
-        # Apply softmax activation to predictions if not already applied
-        y = keras.activations.softmax(y_pred, axis=-1)
-        
-        # Calculate cross-entropy loss
-        loss = keras.losses.categorical_crossentropy(one_hot, y)
-        return loss
+        # 直接返回每个样本的交叉熵损失 (batch,)
+        return loss_fn(y_true, y_pred)
 
     return softmax_loss_
 
@@ -194,36 +189,34 @@ def cross_entropy_loss(out_num:int):
 
 
 def deep_speaker_loss(y_true, y_pred):
-    # y_true.shape = (batch_size, embedding_size)
-    # y_pred.shape = (batch_size, embedding_size)
-    # CONVENTION: Input is:
-    # concat(BATCH_SIZE * [ANCHOR, POSITIVE_EX, NEGATIVE_EX] * NUM_FRAMES)
-    # EXAMPLE:
-    # BATCH_NUM_TRIPLETS = 3, NUM_FRAMES = 2
-    # _____________________________________________________
-    # ANCHOR 1 (512,)
-    # ANCHOR 2 (512,)
-    # ANCHOR 3 (512,)
-    # POS EX 1 (512,)
-    # POS EX 2 (512,)
-    # POS EX 3 (512,)
-    # NEG EX 1 (512,)
-    # NEG EX 2 (512,)
-    # NEG EX 3 (512,)
-    # _____________________________________________________
-
-    #elements = int(y_pred.shape.as_list()[0] / 3)
-    elements = c.BATCH_SIZE
-
-    anchor = y_pred[0:elements]
-    positive_ex = y_pred[elements:2 * elements]
-    negative_ex = y_pred[2 * elements:]
-
-    sap = batch_cosine_similarity(anchor, positive_ex)
-    san = batch_cosine_similarity(anchor, negative_ex)
-    loss = K.maximum(san - sap + alpha, 0.0)
-    total_loss = K.sum(loss)
-    return total_loss
+    """
+    计算深度说话人嵌入的三元组损失
+    
+    Args:
+        y_true: 标签（在这个实现中不使用）
+        y_pred: 嵌入向量，结构为 [anchor, positive, negative] * batch_size
+        
+    Returns:
+        平均三元组损失（不是总和）
+    """
+    # 固定批次大小以解决XLA编译问题
+    # 使用静态操作而非动态分割，避免潜在的条件执行
+    batch_size = tf.shape(y_pred)[0] // 3
+    
+    # 使用静态切片避免条件执行，解决XLA编译的梯度计算问题
+    anchor = y_pred[:batch_size]
+    positive_ex = y_pred[batch_size:2*batch_size]
+    negative_ex = y_pred[2*batch_size:3*batch_size]
+    
+    # 计算余弦相似度
+    sap = batch_cosine_similarity(anchor, positive_ex)  # anchor 和 positive 的相似度
+    san = batch_cosine_similarity(anchor, negative_ex)  # anchor 和 negative 的相似度
+    
+    # 计算 triplet loss: max(0, similarity(anchor,negative) - similarity(anchor,positive) + alpha)
+    loss = tf.maximum(san - sap + alpha, 0.0)
+    
+    # 返回所有triplet的平均损失（而不是总和），使梯度计算更稳定
+    return tf.reduce_mean(loss)
 
 
 

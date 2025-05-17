@@ -113,13 +113,17 @@ class SwitchNormalization(Layer):
             shape=shape,
             name='moving_mean',
             initializer=self.moving_mean_initializer,
-            trainable=False)
+            trainable=False,
+            dtype=self._compute_dtype  # 强制使用当前计算dtype
+        )
 
         self.moving_variance = self.add_weight(
             shape=shape,
             name='moving_variance',
             initializer=self.moving_variance_initializer,
-            trainable=False)
+            trainable=False,
+            dtype=self._compute_dtype  # 强制使用当前计算dtype
+        )
 
         self.mean_weights = self.add_weight(
             shape=(3,),
@@ -194,6 +198,10 @@ class SwitchNormalization(Layer):
                 sample_size = K.cast(sample_size, dtype=K.dtype(inputs))
                 variance_batch_reshaped *= sample_size / (sample_size - (1.0 + self.epsilon))
             
+            # 类型转换，确保赋值不会出错
+            mean_batch_reshaped = tf.cast(mean_batch_reshaped, self.moving_mean.dtype)
+            variance_batch_reshaped = tf.cast(variance_batch_reshaped, self.moving_variance.dtype)
+
             # Update the moving statistics
             new_mean = self.moving_mean * self.momentum + mean_batch_reshaped * (1 - self.momentum)
             new_variance = self.moving_variance * self.momentum + variance_batch_reshaped * (1 - self.momentum)

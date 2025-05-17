@@ -326,9 +326,9 @@ def train_model(model, train_loader, test_loader, max_steps=None):
     # 预取并优化数据加载
     # 使用更大的预取缓冲区以确保CPU始终有任务处理
     buffer_multiplier = max(1, min(4, cpu_count // 4))  # 根据CPU核心数调整缓冲区大小
-    train_loader = train_loader.prefetch(buffer_multiplier * tf.data.AUTOTUNE)
-    test_loader = test_loader.prefetch(buffer_multiplier * tf.data.AUTOTUNE)
-    
+    train_loader = train_loader.prefetch(tf.data.AUTOTUNE)
+    test_loader = test_loader.prefetch(tf.data.AUTOTUNE)
+
     print(f"数据加载优化: 预取缓冲区大小 = {buffer_multiplier}×AUTOTUNE")
     
     # 初始化迭代器
@@ -337,12 +337,10 @@ def train_model(model, train_loader, test_loader, max_steps=None):
     
     # 使用XLA编译优化训练步骤函数 - 这将帮助更好地利用多核CPU
     # experimental_compile=True在较低版本TF中等同于jit_compile=True
-    @tf.function(experimental_compile=True)
     def train_step(x, y):
         """使用XLA编译的训练步骤函数 - 提高CPU利用率"""
         return model.train_on_batch(x, y)
-    
-    @tf.function(jit_compile=True)
+
     def test_step(x, y):
         """使用XLA编译的测试步骤函数"""
         return model.test_on_batch(x, y)
